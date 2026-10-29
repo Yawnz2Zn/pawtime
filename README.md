@@ -5,7 +5,7 @@ in one place and (in later versions) folded into a growth timeline.
 
 **Status: work in progress.** The full README is added near the end of the project.
 
-- Live app: https://YOUR-USERNAME.github.io/pawtime/
+- Live app: https://Yawnz2Zn.github.io/pawtime/
 
 ## Run it locally
 
