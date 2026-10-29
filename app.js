@@ -219,6 +219,58 @@ function dropUrls(id) {
 }
 function markChanged() { state.rev++; state.timelineDirty = true; updateChrome(); }
 
+/* ---------- 4. folding photos into moments ---------- */
+/* THE KEY FUNCTION: connects "user took photos" to "timeline shows folded moments".
+   Walk photos oldest -> newest. A photo joins the current moment when it was
+   taken within the time window AND its dHash is within `sim` bits of the
+   previous photo (and not too far from the moment's first photo). */
+function buildMoments() {
+  const { sim, windowMin } = state.settings;
+  const photos = state.photos.filter((p) => p.kind === 'photo').sort((a, b) => a.ts - b.ts);
+  const groups = [];
+  let cur = null;
+  for (const p of photos) {
+    if (cur) {
+      const last = cur[cur.length - 1];
+      const close = p.ts - last.ts <= windowMin * 60000;
+      const alike = hamming(p.hash, last.hash) <= sim && hamming(p.hash, cur[0].hash) <= sim + 6;
+      if (close && alike) { cur.push(p); continue; }
+    }
+    cur = [p];
+    groups.push(cur);
+  }
+  const moments = groups.map((items) => makeMoment(items, false));
+  for (const s of state.photos.filter((p) => p.kind === 'sticker')) moments.push(makeMoment([s], true));
+  moments.sort((a, b) => a.ts - b.ts);
+
+  // automatic milestones by photo count
+  const marks = { 1: 'First memory', 100: '100th photo', 250: '250th photo', 500: '500th photo', 1000: '1000th photo' };
+  photos.forEach((p, i) => {
+    const label = marks[i + 1];
+    if (!label) return;
+    const m = moments.find((mm) => mm.items.includes(p));
+    if (m) m.milestone = label;
+  });
+  return moments;
+}
+function makeMoment(items, sticker) {
+  const sorted = [...items].sort((a, b) => a.ts - b.ts);
+  const pinned = sorted.find((p) => p.pinCover);
+  const sharpest = sorted.reduce((best, p) => (p.sharp > best.sharp ? p : best), sorted[0]);
+  const tags = new Set();
+  sorted.forEach((p) => p.tags.forEach((t) => tags.add(t)));
+  return {
+    id: sorted[0].id, items: sorted, ts: sorted[0].ts, sticker,
+    cover: pinned || sharpest, coverIsPinned: !!pinned, tags, milestone: null
+  };
+}
+let momentCache = { rev: -1, list: [] };
+function getMoments() {
+  if (momentCache.rev !== state.rev) momentCache = { rev: state.rev, list: buildMoments() };
+  return momentCache.list;
+}
+const momentOf = (photoId) => getMoments().find((m) => m.items.some((i) => i.id === photoId));
+
 /* ---------- 5. camera ---------- */
 const video = $('#video');
 let stream = null, facing = 'environment', camReady = false, burst = false, shooting = false;
@@ -321,6 +373,7 @@ async function importFiles(fileList) {
   }
   if (ok) {
     toast(`Added ${plural(ok, 'photo')} ✓`);
+    setView('timeline');
   }
   else toast('Those files could not be read as images.', 'err', 3500);
   if (ok < files.length && ok) toast(`Added ${ok}, skipped ${files.length - ok} unreadable file(s).`, '', 3500);
@@ -331,11 +384,194 @@ function setView(name) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === 'view-' + name));
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   if (name === 'camera') startCamera(); else { stopCamera(); const qt = $('#quickTags'); if (qt) qt.hidden = true; }
+  if (name === 'timeline') renderTimeline();
+}
+function ageAt(ts) {
+  const bd = state.profile && state.profile.birthday;
+  if (!bd) return '';
+  const b = new Date(bd + 'T00:00:00'), d = new Date(ts);
+  if (d < b) return '';
+  let months = (d.getFullYear() - b.getFullYear()) * 12 + d.getMonth() - b.getMonth();
+  if (d.getDate() < b.getDate()) months--;
+  months = Math.max(0, months);
+  const y = Math.floor(months / 12), m = months % 12;
+  if (!y && !m) return plural(daysBetween(b.getTime(), ts), 'day') + ' old';
+  return [y ? plural(y, 'yr') : '', m ? plural(m, 'mo') : ''].filter(Boolean).join(' ') + ' old';
+}
+function dayNumber(ts, firstTs) {
+  const bd = state.profile && state.profile.birthday;
+  if (bd) { const n = daysBetween(new Date(bd + 'T00:00:00').getTime(), ts); if (n >= 0) return { n: n + 1, label: `Day ${n + 1}`, title: 'Days since birthday' }; }
+  return { n: daysBetween(firstTs, ts) + 1, label: `Day ${daysBetween(firstTs, ts) + 1}`, title: 'Days since the first memory' };
+}
+function isBirthday(ts) {
+  const bd = state.profile && state.profile.birthday;
+  if (!bd) return false;
+  const d = new Date(ts), b = new Date(bd + 'T00:00:00');
+  return d.getMonth() === b.getMonth() && d.getDate() === b.getDate() && d.getFullYear() > b.getFullYear();
+}
+
+function renderTimeline() {
+  const all = getMoments();
+  const photos = state.photos.filter((p) => p.kind === 'photo');
+  const name = state.profile && state.profile.name;
+
+  // headline: how much folding is saving the user
+  const stat = $('#statLine');
+  if (!photos.length && !all.length) stat.innerHTML = '';
+  else {
+    const photoMoments = all.filter((m) => !m.sticker).length;
+    const newest = Math.max(...state.photos.map((p) => p.ts));
+    const age = ageAt(newest);
+    stat.innerHTML = `${name ? esc(name) + ' · ' : ''}${plural(photos.length, 'photo')} folded into ${plural(photoMoments, 'moment')}` +
+      `<small>${age ? esc(age) + ' · ' : ''}Tap a stack to open it. Nothing is ever deleted automatically.</small>`;
+  }
+
+
+  const list = state.filterTag ? all.filter((m) => m.tags.has(state.filterTag)) : all;
+  const host = $('#timeline');
+  const empty = $('#emptyState');
+  if (!list.length) {
+    host.innerHTML = '';
+    empty.hidden = false;
+    if (!state.photos.length) {
+      empty.innerHTML = `<div class="big-emoji">🐾</div><p>Your timeline is empty.<br>Shoot a photo in the Camera tab and it will appear here, already organised.</p>
+        <button class="btn btn-primary" id="emptyDemo">Try it with sample pet photos</button>`;
+      $('#emptyDemo').onclick = () => loadDemo();
+    } else {
+      empty.innerHTML = `<p>No moments have this tag yet.</p><button class="btn" id="emptyClear">Show everything</button>`;
+      $('#emptyClear').onclick = () => { state.filterTag = null; renderTimeline(); };
+    }
+    return;
+  }
+  empty.hidden = true;
+
+  const firstTs = photos.length ? Math.min(...photos.map((p) => p.ts)) : all[0].ts;
+  const desc = [...list].sort((a, b) => b.ts - a.ts);
+  const byMonth = new Map();
+  for (const m of desc) {
+    const mk = monthKey(m.ts), dk = dayKey(m.ts);
+    if (!byMonth.has(mk)) byMonth.set(mk, new Map());
+    const days = byMonth.get(mk);
+    if (!days.has(dk)) days.set(dk, []);
+    days.get(dk).push(m);
+  }
+
+  let html = '';
+  for (const [mk, days] of byMonth) {
+    const anyTs = [...days.values()][0][0].ts;
+    const age = ageAt(new Date(+mk.slice(0, 4), +mk.slice(5, 7), 0, 12).getTime());
+    html += `<div class="month-h"><span>${esc(fmtMonth(anyTs))}</span><small>${esc(age)}</small></div>`;
+    for (const [dk, ms] of days) {
+      const ts = ms[0].ts;
+      const nPhotos = ms.reduce((n, m) => n + (m.sticker ? 0 : m.items.length), 0);
+      const nMoments = ms.filter((m) => !m.sticker).length;
+      const dn = dayNumber(ts, firstTs);
+      html += `<section class="day" data-day="${dk}"><div class="day-h"><span class="d">${esc(fmtDay(ts))}</span>
+        <span class="pillbox" title="${dn.title}">${dn.label}</span>
+        ${isBirthday(ts) ? '<span class="pillbox bday">🎂 Birthday!</span>' : ''}
+        ${nPhotos ? `<span class="pillbox fold">${plural(nPhotos, 'photo')} → ${plural(nMoments, 'moment')}</span>` : ''}</div>
+        <div class="grid">`;
+      for (const m of ms) html += momentCard(m);
+      html += '</div></section>';
+    }
+  }
+  host.innerHTML = html + '<div class="end-gap"></div>';
+}
+function momentCard(m) {
+  const n = m.items.length;
+  const tags = [...m.tags].filter((t) => t !== 'sticker').map(tagEmoji).join('');
+  const label = m.sticker ? 'Sticker' : `Moment of ${plural(n, 'photo')}`;
+  return `<button class="moment${n > 1 ? ' stack' : ''}${m.sticker ? ' sticker' : ''}" data-open="${m.cover.id}" aria-label="${label}">
+    <img src="${urlFor(m.cover, 'thumb')}" alt="" loading="lazy" decoding="async">
+    ${n > 1 ? `<span class="badge count">×${n}</span>` : ''}
+    ${m.milestone ? `<span class="badge mile">⭐ ${esc(m.milestone)}</span>` : (m.tags.has('milestone') ? '<span class="badge mile">⭐</span>' : '')}
+    ${tags.replace('⭐', '') ? `<span class="badge tags">${tags.replace('⭐', '')}</span>` : ''}
+    ${m.sticker ? '<span class="badge stk">sticker</span>' : ''}</button>`;
+}
+/* ---------- 9. sample photos (so anyone can try it without a camera) ---------- */
+function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
+const SCENES = {
+  grass: { top: '#bfe3f2', bot: '#8ccf7e', deco(x) { x.fillStyle = '#ffe9a0'; x.beginPath(); x.arc(660, 110, 58, 0, 7); x.fill(); x.fillStyle = '#6fb764'; x.fillRect(0, 380, 800, 220); } },
+  floor: { top: '#f4e6cc', bot: '#d3a977', deco(x) { x.fillStyle = '#bfe0f5'; x.fillRect(90, 60, 210, 170); x.strokeStyle = '#fff'; x.lineWidth = 8; x.strokeRect(90, 60, 210, 170); x.beginPath(); x.moveTo(195, 60); x.lineTo(195, 230); x.stroke(); } },
+  sofa:  { top: '#c3d6ee', bot: '#7fa2cf', deco(x) { x.fillStyle = '#6f92c4'; x.fillRect(0, 300, 800, 300); x.fillStyle = '#ee9bb0'; x.beginPath(); x.ellipse(660, 330, 90, 70, 0.3, 0, 7); x.fill(); } },
+  bed:   { top: '#f8dde3', bot: '#e3a7b5', deco(x) { x.fillStyle = '#fff4f6'; x.beginPath(); x.ellipse(400, 470, 330, 90, 0, 0, 7); x.fill(); x.fillStyle = '#f0c3cd'; x.beginPath(); x.ellipse(160, 120, 60, 60, 0, 0, 7); x.fill(); } }
+};
+const POSES = { sit: { x: 400, y: 340, sx: 1, sy: 1, rot: 0 }, lie: { x: 410, y: 430, sx: 1.35, sy: 0.78, rot: 0 }, run: { x: 300, y: 360, sx: 1.05, sy: 0.95, rot: -0.12 } };
+
+async function makeDemoPhoto({ scene, pose, seed, blur = 0, eyesClosed = false, tongue = false }) {
+  const r = rng(seed), c = document.createElement('canvas');
+  c.width = 800; c.height = 600;
+  const x = c.getContext('2d'), S = SCENES[scene], P = POSES[pose];
+  const g = x.createLinearGradient(0, 0, 0, 600); g.addColorStop(0, S.top); g.addColorStop(1, S.bot);
+  x.fillStyle = g; x.fillRect(0, 0, 800, 600); S.deco(x);
+  const jx = (r() - 0.5) * 16, jy = (r() - 0.5) * 12, tilt = (r() - 0.5) * 0.08;
+  if (blur) x.filter = `blur(${blur}px)`;
+  x.save(); x.translate(P.x + jx, P.y + jy); x.rotate(P.rot + tilt); x.scale(P.sx, P.sy);
+  const fur = '#c99a58', dark = '#8a5a2b', light = '#f3dcb8';
+  x.fillStyle = 'rgba(0,0,0,.14)'; x.beginPath(); x.ellipse(0, 150, 150, 26, 0, 0, 7); x.fill();         // shadow
+  x.fillStyle = fur; x.beginPath(); x.ellipse(0, 90, 120, 100, 0, 0, 7); x.fill();                         // body
+  x.fillStyle = light; x.beginPath(); x.ellipse(0, 110, 70, 70, 0, 0, 7); x.fill();                        // belly
+  x.save(); x.translate(115, 60); x.rotate(0.9 + (r() - 0.5) * 0.3); x.fillStyle = fur; x.beginPath(); x.ellipse(0, 0, 18, 60, 0, 0, 7); x.fill(); x.restore(); // tail
+  x.fillStyle = fur; x.beginPath(); x.arc(0, -40, 98, 0, 7); x.fill();                                    // head
+  x.fillStyle = dark; for (const s of [-1, 1]) { x.save(); x.translate(s * 82, -92); x.rotate(s * 0.45); x.beginPath(); x.ellipse(0, 0, 30, 56, 0, 0, 7); x.fill(); x.restore(); } // ears
+  x.fillStyle = light; x.beginPath(); x.ellipse(0, -8, 52, 42, 0, 0, 7); x.fill();                         // muzzle
+  x.fillStyle = '#2b1d12'; x.beginPath(); x.ellipse(0, -26, 17, 12, 0, 0, 7); x.fill();                   // nose
+  x.strokeStyle = '#2b1d12'; x.lineWidth = 5; x.lineCap = 'round';
+  for (const s of [-1, 1]) {
+    if (eyesClosed) { x.beginPath(); x.arc(s * 38, -62, 13, 0.15 * Math.PI, 0.85 * Math.PI); x.stroke(); }
+    else { x.fillStyle = '#2b1d12'; x.beginPath(); x.arc(s * 38, -62, 11, 0, 7); x.fill(); x.fillStyle = '#fff'; x.beginPath(); x.arc(s * 38 + 4, -66, 3.5, 0, 7); x.fill(); }
+  }
+  x.beginPath(); x.moveTo(0, -14); x.lineTo(0, 0); x.moveTo(-22, 8); x.quadraticCurveTo(0, 22, 22, 8); x.stroke();   // mouth
+  if (tongue) { x.fillStyle = '#ef7d92'; x.beginPath(); x.ellipse(0, 20, 12, 18, 0, 0, 7); x.fill(); }
+  x.restore(); x.filter = 'none';
+  // a little sensor noise so the pictures look like real photos
+  const px = x.getImageData(0, 0, 800, 600), d = px.data;
+  for (let i = 0; i < d.length; i += 4) { const n = (r() - 0.5) * 8; d[i] += n; d[i + 1] += n; d[i + 2] += n; }
+  x.putImageData(px, 0, 0);
+  return c;
+}
+async function loadDemo() {
+  const now = new Date();
+  const at = (daysAgo, h, m) => { const d = new Date(now); d.setDate(d.getDate() - daysAgo); d.setHours(h, m, 0, 0); return d.getTime(); };
+  // [daysAgo, hour, minute, scene, pose, count, tags, extras]
+  const plan = [
+    [400, 11, 0, 'bed', 'lie', 1, ['milestone'], {}],
+    [365, 10, 0, 'sofa', 'sit', 2, ['milestone', 'eat'], {}],
+    [62, 16, 40, 'floor', 'lie', 3, ['sleep'], {}],
+    [30, 9, 5, 'grass', 'run', 4, ['walk'], {}],
+    [3, 13, 10, 'floor', 'lie', 4, ['sleep'], { blurIdx: 2, closed: true }],
+    [1, 8, 30, 'grass', 'run', 2, ['walk'], {}],
+    [1, 20, 0, 'sofa', 'sit', 3, ['eat'], {}],
+    [0, 9, 10, 'grass', 'sit', 5, ['walk'], { blurIdx: 1 }],
+    [0, 14, 20, 'floor', 'lie', 4, ['sleep'], { blurIdx: 0, closed: true }],
+    [0, 18, 5, 'sofa', 'run', 1, ['silly'], { tongue: true }]
+  ];
+  const total = plan.reduce((n, p) => n + p[5], 0);
+  let done = 0, seed = 7;
+  try {
+    for (const [ago, h, m, scene, pose, count, tags, ex] of plan) {
+      for (let i = 0; i < count; i++) {
+        const canvas = await makeDemoPhoto({ scene, pose, seed: seed++, blur: ex.blurIdx === i ? 5 : 0, eyesClosed: !!ex.closed, tongue: !!ex.tongue });
+        await ingestSource(canvas, { ts: at(ago, h, m) + i * 20000, tags, demo: true });
+        toast(`Making sample photos… ${++done}/${total}`, '', 1500);
+        if (done % 4 === 0) await sleep(0);
+      }
+    }
+  } catch (e) { toast('Could not create sample photos: ' + (e.message || e), 'err', 3500); return; }
+  if (!state.profile || (!state.profile.name && !state.profile.birthday)) {
+    const bd = new Date(now); bd.setDate(bd.getDate() - 500);
+    state.profile = { name: 'Mochi', birthday: dayKey(bd.getTime()), demo: true };
+    await metaSet('profile', state.profile);
+  }
+  closeSheet('sheet-onboard'); closeSheet('sheet-settings');
+  setView('timeline');
+  toast(`Added ${total} sample photos. Notice how similar shots fold into stacks ✓`, '', 3800);
 }
 /* ---------- 11. wiring and start-up ---------- */
 function wire() {
   $$('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
   $('#btnThumb').addEventListener('click', () => {
+    setView('timeline');
   });
   $('#btnShutter').addEventListener('click', shoot);
   $('#btnFlip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); });
@@ -345,6 +581,7 @@ function wire() {
     toast(burst ? 'Burst on: each tap takes 5 photos' : 'Burst off');
   });
   $('#btnRetry').addEventListener('click', startCamera);
+  $('#btnDemo').addEventListener('click', loadDemo);
   $('#fileInput').addEventListener('change', (e) => { importFiles(e.target.files); e.target.value = ''; });
 
   $('#obStart').addEventListener('click', async () => {
