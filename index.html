@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#c4a57b">
+  <meta name="description" content="PawTime: shoot-to-save pet memories that fold themselves into a growth timeline.">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="PawTime">
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <title>PawTime</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <header class="topbar">
+    <div class="brand">🐾 PawTime</div>
+    <button id="petBadge" class="pet-badge" aria-label="Pet profile and settings">My pet</button>
+  </header>
+
+  <main>
+    <!-- CAMERA -->
+    <section id="view-camera" class="view active" aria-label="Camera">
+      <div class="cam-stage">
+        <video id="video" playsinline muted autoplay></video>
+        <div id="flash" class="flash"></div>
+
+        <div id="camMsg" class="cam-msg" hidden>
+          <div class="cam-msg-inner">
+            <div class="cam-msg-icon" aria-hidden="true">📷</div>
+            <h2 id="camMsgTitle"></h2>
+            <p id="camMsgText"></p>
+            <div class="btn-col">
+              <button id="btnRetry" class="btn btn-primary">Try the camera again</button>
+              <label class="btn">Choose photos from my gallery
+                <input id="fileInput" type="file" accept="image/*" multiple hidden>
+              </label>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="cam-controls">
+        <button id="btnThumb" class="thumb-btn" aria-label="Open timeline">
+          <img id="thumbImg" alt="" hidden>
+          <span id="thumbCount" class="thumb-count">0</span>
+        </button>
+        <button id="btnShutter" class="shutter" aria-label="Take photo"><span></span></button>
+        <div class="cam-side">
+          <button id="btnBurst" class="pill" aria-pressed="false" title="Burst takes 5 quick photos">Burst: off</button>
+          <button id="btnFlip" class="pill" title="Switch camera">Flip ⟲</button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <nav class="tabbar">
+    <button class="tab active" data-view="camera"><span class="tab-ico">📷</span>Camera</button>
+  </nav>
+
+  <!-- ONBOARDING -->
+  <div id="sheet-onboard" class="sheet center" hidden>
+    <div class="card">
+      <div class="big-emoji" aria-hidden="true">🐶🐱</div>
+      <h2>Who are we remembering?</h2>
+      <p class="muted">Their birthday lets the timeline show age and “Day N”. You can skip this and add it later.</p>
+      <div class="field"><label for="obName">Pet's name</label><input id="obName" maxlength="24" placeholder="e.g. Mochi" autocomplete="off"></div>
+      <div class="field"><label for="obBirthday">Birthday (optional)</label><input id="obBirthday" type="date"></div>
+      <div class="btn-col">
+        <button id="obStart" class="btn btn-primary">Start capturing</button>
+        <button id="obSkip" class="btn btn-ghost">Skip for now</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
