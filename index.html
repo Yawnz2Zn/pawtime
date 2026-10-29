@@ -91,6 +91,21 @@
     </div>
   </div>
 
+  <!-- MOMENT VIEWER -->
+  <div id="sheet-viewer" class="sheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon-btn" data-close="sheet-viewer" aria-label="Close">✕</button>
+      <h2 id="vTitle">Moment</h2>
+      <span></span>
+    </div>
+    <div class="sheet-body">
+      <div id="vStage" class="v-stage"></div>
+      <div id="vStrip" class="v-strip"></div>
+      <p id="vInfo" class="muted small"></p>
+      <div id="vActions" class="btn-col"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
 <script src="app.js"></script>

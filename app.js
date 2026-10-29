@@ -488,6 +488,95 @@ function momentCard(m) {
     ${tags.replace('⭐', '') ? `<span class="badge tags">${tags.replace('⭐', '')}</span>` : ''}
     ${m.sticker ? '<span class="badge stk">sticker</span>' : ''}</button>`;
 }
+/* ---------- 7. moment viewer ---------- */
+const viewer = { photoId: null };
+function openViewer(photoId) { viewer.photoId = photoId; openSheet('sheet-viewer'); renderViewer(); }
+
+function renderViewer() {
+  const m = momentOf(viewer.photoId);
+  if (!m) { closeSheet('sheet-viewer'); return; }
+  const cur = m.items.find((i) => i.id === viewer.photoId) || m.cover;
+  viewer.photoId = cur.id;
+  $('#vTitle').textContent = m.sticker ? 'Sticker' : (m.items.length > 1 ? `Moment · ${plural(m.items.length, 'photo')}` : 'Photo');
+  const stage = $('#vStage');
+  stage.className = 'v-stage' + (cur.kind === 'sticker' ? ' sticker' : '');
+  stage.innerHTML = `<img src="${urlFor(cur, 'blob')}" alt="Pet photo taken ${esc(fmtDay(cur.ts))}">`;
+
+  $('#vStrip').innerHTML = m.items.length > 1 ? m.items.map((i) =>
+    `<button data-pick="${i.id}" class="${i.id === cur.id ? 'on' : ''}" aria-label="Photo at ${fmtTime(i.ts)}"><img src="${urlFor(i, 'thumb')}" alt="">${i.id === m.cover.id ? '<span class="cv" title="Cover">⭐</span>' : ''}</button>`).join('') : '';
+
+  const age = ageAt(cur.ts);
+  $('#vInfo').textContent = `${fmtDay(cur.ts)} · ${fmtTime(cur.ts)}${age ? ' · ' + age : ''}` +
+    (m.items.length > 1 ? (m.coverIsPinned ? ' · Cover: your pick' : ' · Cover: auto-picked as the sharpest shot') : '');
+
+
+  const acts = [];
+  if (m.items.length > 1 && cur.id !== m.cover.id) acts.push(`<button class="btn" data-act="cover">⭐ Use this photo as the cover</button>`);
+  acts.push(`<button class="btn" data-act="share">⤴ Share / Download</button>`);
+  if (m.items.length > 1) acts.push(`<button class="btn" data-act="tidy">🧹 Keep only the cover, delete ${m.items.length - 1} others</button>`);
+  acts.push(`<button class="btn btn-danger" data-act="delete">🗑 Delete this ${cur.kind === 'sticker' ? 'sticker' : 'photo'}</button>`);
+  $('#vActions').innerHTML = acts.join('');
+}
+async function removePhotos(ids) {
+  for (const id of ids) {
+    await dbDelete(id);
+    dropUrls(id);
+    state.photos = state.photos.filter((p) => p.id !== id);
+  }
+  markChanged();
+}
+async function viewerAction(act) {
+  const m = momentOf(viewer.photoId);
+  if (!m) return;
+  const cur = m.items.find((i) => i.id === viewer.photoId) || m.cover;
+  if (act === 'cover') {
+    for (const p of m.items) { p.pinCover = p.id === cur.id; await dbPut(p); }
+    markChanged(); renderViewer(); toast('Cover updated ✓'); return;
+  }
+  if (act === 'share') {
+    const res = await shareBlob(cur.blob, `pawtime-${dayKey(cur.ts)}.${cur.kind === 'sticker' ? 'png' : 'jpg'}`);
+    shareToast(res); return;
+  }
+  if (act === 'tidy') {
+    const others = m.items.filter((i) => i.id !== m.cover.id);
+    if (!confirm(`Delete ${plural(others.length, 'photo')} and keep only the cover? This cannot be undone.`)) return;
+    await removePhotos(others.map((o) => o.id));
+    viewer.photoId = m.cover.id; renderViewer(); renderTimeline(); toast('Tidied up ✓'); return;
+  }
+  if (act === 'delete') {
+    if (!confirm(`Delete this ${cur.kind}? This cannot be undone.`)) return;
+    const next = m.items.find((i) => i.id !== cur.id);
+    await removePhotos([cur.id]);
+    if (next) { viewer.photoId = next.id; renderViewer(); } else closeSheet('sheet-viewer');
+    renderTimeline(); toast('Deleted');
+  }
+}
+
+/* ---------- sharing ---------- */
+function downloadBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1500);
+}
+async function shareBlob(blob, filename) {
+  try {
+    const file = new File([blob], filename, { type: blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'PawTime' });
+      return 'shared';
+    }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return 'cancelled';     // user closed the share sheet
+  }
+  downloadBlob(blob, filename);                                // fallback when sharing is unavailable
+  return 'downloaded';
+}
+function shareToast(res) {
+  if (res === 'shared') toast('Shared ✓');
+  else if (res === 'downloaded') toast('Sharing is not supported here, so it was downloaded instead ✓', '', 3200);
+}
+
 /* ---------- 9. sample photos (so anyone can try it without a camera) ---------- */
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 const SCENES = {
@@ -583,6 +672,11 @@ function wire() {
   $('#btnRetry').addEventListener('click', startCamera);
   $('#btnDemo').addEventListener('click', loadDemo);
   $('#fileInput').addEventListener('change', (e) => { importFiles(e.target.files); e.target.value = ''; });
+  $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
+
+  $$('[data-close]').forEach((b) => b.addEventListener('click', () => { closeSheet(b.dataset.close); if (b.dataset.close === 'sheet-viewer' || b.dataset.close === 'sheet-sticker') renderTimeline(); }));
+  $('#vStrip').addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { viewer.photoId = b.dataset.pick; renderViewer(); } });
+  $('#vActions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) viewerAction(b.dataset.act); });
 
   $('#obStart').addEventListener('click', async () => {
     state.profile = { name: $('#obName').value.trim(), birthday: $('#obBirthday').value, skipped: false };
