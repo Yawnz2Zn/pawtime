@@ -115,6 +115,33 @@
     </div>
   </div>
 
+  <!-- STICKER STUDIO -->
+  <div id="sheet-sticker" class="sheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon-btn" data-close="sheet-sticker" aria-label="Close">✕</button>
+      <h2>Sticker Studio</h2>
+      <button id="stkReset" class="link-btn">Reset</button>
+    </div>
+    <div class="sheet-body">
+      <div class="stk-stage">
+        <div class="checker"><canvas id="stkCanvas" width="512" height="512" aria-label="Sticker preview"></canvas></div>
+        <p class="hint">Drag the photo to reposition it</p>
+      </div>
+      <div class="field"><label for="stkCaption">Caption</label>
+        <input id="stkCaption" maxlength="24" placeholder="e.g. Treat time!" autocomplete="off"></div>
+      <div class="field"><span class="lbl">Shape</span><div id="stkShapes" class="seg"></div></div>
+      <div class="field"><span class="lbl">Border</span><div id="stkBorders" class="swatches"></div></div>
+      <div class="field"><span class="lbl">Caption colour</span><div id="stkCapColors" class="swatches"></div></div>
+      <div class="field"><span class="lbl">Emoji</span><div id="stkEmojis" class="seg wrap"></div></div>
+      <div class="field"><label for="stkZoom">Zoom <output id="stkZoomOut">100%</output></label>
+        <input id="stkZoom" type="range" min="100" max="250" value="100"></div>
+    </div>
+    <div class="sheet-foot">
+      <button id="stkSave" class="btn">Save to timeline</button>
+      <button id="stkShare" class="btn btn-primary">Share / Download</button>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
 <script src="app.js"></script>

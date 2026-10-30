@@ -538,6 +538,7 @@ function renderViewer() {
   else $('#vTags').innerHTML = TAGS.map((t) => `<button class="chip${m.items.every((p) => p.tags.includes(t.id)) ? ' on' : ''}" data-vtag="${t.id}">${t.emoji} ${t.label}</button>`).join('');
 
   const acts = [];
+  if (cur.kind === 'photo') acts.push(`<button class="btn btn-primary" data-act="sticker">✨ Make a sticker from this photo</button>`);
   if (m.items.length > 1 && cur.id !== m.cover.id) acts.push(`<button class="btn" data-act="cover">⭐ Use this photo as the cover</button>`);
   acts.push(`<button class="btn" data-act="share">⤴ Share / Download</button>`);
   if (m.items.length > 1) acts.push(`<button class="btn" data-act="tidy">🧹 Keep only the cover, delete ${m.items.length - 1} others</button>`);
@@ -556,6 +557,7 @@ async function viewerAction(act) {
   const m = momentOf(viewer.photoId);
   if (!m) return;
   const cur = m.items.find((i) => i.id === viewer.photoId) || m.cover;
+  if (act === 'sticker') { openStudio(cur); return; }
   if (act === 'cover') {
     for (const p of m.items) { p.pinCover = p.id === cur.id; await dbPut(p); }
     markChanged(); renderViewer(); toast('Cover updated ✓'); return;
@@ -603,6 +605,131 @@ function shareToast(res) {
   if (res === 'shared') toast('Shared ✓');
   else if (res === 'downloaded') toast('Sharing is not supported here, so it was downloaded instead ✓', '', 3200);
 }
+
+/* ---------- 8. sticker studio ---------- */
+const SHAPES = [{ id: 'circle', label: '⚪ Circle' }, { id: 'rounded', label: '▢ Rounded' }, { id: 'heart', label: '♥ Heart' }];
+const BORDERS = ['#ffffff', '#fff1c9', '#ffd3dc', '#cfeedd', '#cfe4ff', '#3b2f23'];
+const CAPCOLORS = ['#4a3d2e', '#d6336c', '#2f9e68', '#2f6fdb', '#e8590c', '#ffffff'];
+const EMOJIS = ['', '🐾', '❤️', '⭐', '😂', '🎂', '🦴', '🐟', '🌈'];
+const STK_FONT = '"Arial Rounded MT Bold","Nunito",ui-rounded,"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+const stk = { src: null, bmp: null, shape: 'circle', border: '#ffffff', caption: '', capColor: '#4a3d2e', emoji: '', zoom: 1, panX: 0, panY: 0, savedClean: false, busy: false };
+const stkCanvas = $('#stkCanvas');
+
+function shapePath(x, shape, b) {
+  x.beginPath();
+  if (shape === 'circle') { x.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, Math.PI * 2); }
+  else if (shape === 'rounded') {
+    const r = b.w * 0.2;
+    x.moveTo(b.x + r, b.y); x.arcTo(b.x + b.w, b.y, b.x + b.w, b.y + b.h, r);
+    x.arcTo(b.x + b.w, b.y + b.h, b.x, b.y + b.h, r); x.arcTo(b.x, b.y + b.h, b.x, b.y, r); x.arcTo(b.x, b.y, b.x + b.w, b.y, r);
+  } else {
+    const { x: X, y: Y, w, h } = b;
+    x.moveTo(X + w / 2, Y + h * 0.97);
+    x.bezierCurveTo(X - w * 0.12, Y + h * 0.58, X + w * 0.04, Y - h * 0.02, X + w / 2, Y + h * 0.28);
+    x.bezierCurveTo(X + w * 0.96, Y - h * 0.02, X + w * 1.12, Y + h * 0.58, X + w / 2, Y + h * 0.97);
+  }
+  x.closePath();
+}
+function drawSticker(c, st) {
+  const S = c.width, x = c.getContext('2d');
+  x.clearRect(0, 0, S, S);
+  const m = 44, box = { x: m, y: m, w: S - 2 * m, h: S - 2 * m };
+  // border (drawn first so it sits outside the photo) with a soft shadow
+  shapePath(x, st.shape, box);
+  x.save();
+  x.shadowColor = 'rgba(0,0,0,.28)'; x.shadowBlur = 14; x.shadowOffsetY = 4;
+  x.lineJoin = 'round'; x.lineWidth = 30; x.strokeStyle = st.border; x.stroke();
+  x.fillStyle = st.border; x.fill();
+  x.restore();
+  // photo, clipped to the shape, zoomed and panned (pan is clamped so the photo always covers the shape)
+  x.save();
+  shapePath(x, st.shape, box); x.clip();
+  const { w: iw, h: ih } = srcSize(st.bmp);
+  const k = Math.max(box.w / iw, box.h / ih) * st.zoom, dw = iw * k, dh = ih * k;
+  st.panX = clamp(st.panX, -(dw - box.w) / 2, (dw - box.w) / 2);
+  st.panY = clamp(st.panY, -(dh - box.h) / 2, (dh - box.h) / 2);
+  x.drawImage(st.bmp, box.x + box.w / 2 - dw / 2 + st.panX, box.y + box.h / 2 - dh / 2 + st.panY, dw, dh);
+  x.restore();
+  if (st.emoji) {
+    x.font = `${Math.round(S * 0.17)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText(st.emoji, S * 0.83, S * 0.17);
+  }
+  const text = st.caption.trim();
+  if (text) {
+    let fs = Math.round(S * 0.115);
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    do { x.font = `800 ${fs}px ${STK_FONT}`; fs -= 2; } while (x.measureText(text).width > S * 0.84 && fs > 16);
+    x.lineJoin = 'round'; x.lineWidth = Math.round(fs * 0.34); x.strokeStyle = st.capColor === '#ffffff' ? '#3b2f23' : '#ffffff';
+    x.strokeText(text, S / 2, S * 0.87); x.fillStyle = st.capColor; x.fillText(text, S / 2, S * 0.87);
+  }
+}
+const redrawSticker = () => { if (stk.bmp) drawSticker(stkCanvas, stk); };
+
+async function openStudio(rec) {
+  try {
+    if (stk.bmp && stk.bmp.close) stk.bmp.close();
+    stk.bmp = await blobToBitmap(rec.blob);
+  } catch (e) { toast('Could not open that photo: ' + e.message, 'err'); return; }
+  stk.src = rec;
+  resetStudio(false);
+  openSheet('sheet-sticker');
+}
+function resetStudio(keepToast = true) {
+  Object.assign(stk, { shape: 'circle', border: '#ffffff', caption: '', capColor: '#4a3d2e', emoji: '', zoom: 1, panX: 0, panY: 0, savedClean: false });
+  $('#stkCaption').value = ''; $('#stkZoom').value = 100; $('#stkZoomOut').textContent = '100%';
+  buildStudioControls(); redrawSticker(); syncStudioButtons();
+  if (keepToast) toast('Sticker reset');
+}
+function buildStudioControls() {
+  $('#stkShapes').innerHTML = SHAPES.map((s) => `<button data-shape="${s.id}" class="${stk.shape === s.id ? 'on' : ''}">${s.label}</button>`).join('');
+  $('#stkBorders').innerHTML = BORDERS.map((c) => `<button data-border="${c}" class="${stk.border === c ? 'on' : ''}" style="background:${c}" aria-label="Border ${c}"></button>`).join('');
+  $('#stkCapColors').innerHTML = CAPCOLORS.map((c) => `<button data-capcolor="${c}" class="${stk.capColor === c ? 'on' : ''}" style="background:${c}" aria-label="Caption colour ${c}"></button>`).join('');
+  $('#stkEmojis').innerHTML = EMOJIS.map((e) => `<button data-emoji="${e}" class="${stk.emoji === e ? 'on' : ''}">${e || 'None'}</button>`).join('');
+}
+function studioChanged() { stk.savedClean = false; redrawSticker(); syncStudioButtons(); }
+function syncStudioButtons() {
+  const b = $('#stkSave');
+  b.textContent = stk.savedClean ? 'Saved ✓' : 'Save to timeline';
+  b.disabled = stk.savedClean || stk.busy;
+}
+async function studioBlob() { return toBlob(stkCanvas, 'image/png'); }
+async function saveSticker() {
+  if (stk.busy || stk.savedClean) return;      // repeated clicks do nothing
+  stk.busy = true; syncStudioButtons();
+  try {
+    const blob = await studioBlob();
+    const small = drawScaled(stkCanvas, 320);
+    const rec = { id: uid(), ts: Date.now(), kind: 'sticker', blob, thumb: await toBlob(small, 'image/png'), hash: '0000000000000000', sharp: 0, tags: [], pinCover: false, demo: false, srcId: stk.src && stk.src.id };
+    await dbPut(rec); state.photos.push(rec); markChanged();
+    stk.savedClean = true;
+    toast('Sticker saved to your timeline ✓');
+  } catch (e) { toast('Could not save the sticker: ' + (e.message || e), 'err', 3500); }
+  finally { stk.busy = false; syncStudioButtons(); }
+}
+async function shareSticker() {
+  if (stk.busy) return;
+  stk.busy = true;
+  try {
+    if (!stk.caption.trim() && !confirm('This sticker has no caption. Share it anyway?')) return;
+    const res = await shareBlob(await studioBlob(), `pawtime-sticker-${Date.now()}.png`);
+    shareToast(res);
+  } catch (e) { toast('Could not share: ' + (e.message || e), 'err', 3500); }
+  finally { stk.busy = false; syncStudioButtons(); }
+}
+// drag the photo inside the sticker shape
+(function enablePan() {
+  let drag = null;
+  stkCanvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, px: stk.panX, py: stk.panY }; stkCanvas.setPointerCapture(e.pointerId); });
+  stkCanvas.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    const scale = stkCanvas.width / stkCanvas.getBoundingClientRect().width;
+    stk.panX = drag.px + (e.clientX - drag.x) * scale; stk.panY = drag.py + (e.clientY - drag.y) * scale;
+    studioChanged();
+  });
+  const end = () => { drag = null; };
+  stkCanvas.addEventListener('pointerup', end); stkCanvas.addEventListener('pointercancel', end);
+})();
 
 /* ---------- 9. sample photos (so anyone can try it without a camera) ---------- */
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -719,6 +846,16 @@ function wire() {
     await toggleTagOn(m.items, b.dataset.vtag); renderViewer();
   });
   $('#vActions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) viewerAction(b.dataset.act); });
+
+  $('#stkCaption').addEventListener('input', (e) => { stk.caption = e.target.value; studioChanged(); });
+  $('#stkZoom').addEventListener('input', (e) => { stk.zoom = e.target.value / 100; $('#stkZoomOut').textContent = e.target.value + '%'; studioChanged(); });
+  $('#stkShapes').addEventListener('click', (e) => { const b = e.target.closest('[data-shape]'); if (!b) return; stk.shape = b.dataset.shape; buildStudioControls(); studioChanged(); });
+  $('#stkBorders').addEventListener('click', (e) => { const b = e.target.closest('[data-border]'); if (!b) return; stk.border = b.dataset.border; buildStudioControls(); studioChanged(); });
+  $('#stkCapColors').addEventListener('click', (e) => { const b = e.target.closest('[data-capcolor]'); if (!b) return; stk.capColor = b.dataset.capcolor; buildStudioControls(); studioChanged(); });
+  $('#stkEmojis').addEventListener('click', (e) => { const b = e.target.closest('[data-emoji]'); if (!b) return; stk.emoji = b.dataset.emoji; buildStudioControls(); studioChanged(); });
+  $('#stkReset').addEventListener('click', () => resetStudio(true));
+  $('#stkSave').addEventListener('click', saveSticker);
+  $('#stkShare').addEventListener('click', shareSticker);
 
   $('#obStart').addEventListener('click', async () => {
     state.profile = { name: $('#obName').value.trim(), birthday: $('#obBirthday').value, skipped: false };
