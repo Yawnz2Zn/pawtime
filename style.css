@@ -173,3 +173,29 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .toast.err{background:var(--danger)}
 
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+/* sticker studio v2 */
+#stkCanvas{width:min(100%,calc(38dvh * var(--ar,1)));height:auto;aspect-ratio:var(--ar,1);display:block;margin:0 auto;touch-action:none;cursor:grab}
+.stk-tabs{display:flex;gap:4px;overflow-x:auto;padding:12px 0 8px;scrollbar-width:none}
+.stk-tabs::-webkit-scrollbar{display:none}
+.stk-tab{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:1px;background:var(--card);border:1px solid var(--sand);border-radius:14px;padding:6px 2px;font-weight:700;font-size:.72rem;white-space:nowrap}
+.stk-tab span{font-size:1.2rem;line-height:1.2}
+.stk-tab.on{background:var(--accent);border-color:var(--accent);color:#fff}
+.stk-panel{padding-bottom:8px}
+.layer-panel{background:#eef5ff;border:1px solid #c5dcf7;border-radius:14px;padding:10px 12px;margin:10px 0 0}
+.layer-panel .field{margin:6px 0}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:8px 0}
+.row2 label{font-size:.8rem;font-weight:700;color:var(--brown)}
+.row3{display:flex;gap:8px;margin-top:8px}
+.btn-sm{padding:9px 8px;font-size:.84rem;border-radius:12px}
+.chk{display:flex!important;align-items:center;gap:8px;font-weight:600!important;color:var(--ink)!important}
+.chk input{width:20px;height:20px;accent-color:var(--accent)}
+.grid-add{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.add-btn{background:var(--card);border:1px solid var(--sand);border-radius:14px;padding:10px 4px;display:flex;flex-direction:column;align-items:center;gap:4px;min-height:64px;justify-content:center}
+.add-btn b{font-size:1rem;line-height:1.1;word-break:break-word}
+.add-btn small{color:var(--muted);font-size:.72rem}
+.add-btn canvas{width:40px;height:40px}
+.emoji-grid{display:grid;grid-template-columns:repeat(6,1fr);gap:6px}
+.emoji-grid button{background:var(--card);border:1px solid var(--sand);border-radius:12px;font-size:1.5rem;padding:6px 0}
+.swatches .sw{width:34px;height:34px;border-radius:50%;border:2px solid var(--sand);padding:0}
+.swatches .sw.on{outline:3px solid var(--accent);outline-offset:2px}
+.stk-panel input[type=text],.layer-panel input:not([type]){width:100%}

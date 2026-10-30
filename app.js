@@ -442,7 +442,6 @@ function renderTimeline() {
       `<small>${age ? esc(age) + ' · ' : ''}Tap a stack to open it. Nothing is ever deleted automatically.</small>`;
   }
 
-  renderReviewCard(all);
   renderFilterChips(all);
 
   const list = state.filterTag ? all.filter((m) => m.tags.has(state.filterTag)) : all;
@@ -514,37 +513,6 @@ function renderFilterChips(all) {
     `<button class="chip${state.filterTag ? '' : ' on'}" data-filter="">All</button>` +
     TAGS.map((t) => `<button class="chip${state.filterTag === t.id ? ' on' : ''}" data-filter="${t.id}">${t.emoji} ${t.label}${counts[t.id] ? ' · ' + counts[t.id] : ''}</button>`).join('');
 }
-function renderReviewCard(all) {
-  const card = $('#reviewCard');
-  const photoMoments = all.filter((m) => !m.sticker);
-  const now = new Date();
-  const past = photoMoments.filter((m) => { const d = new Date(m.ts); return d.getMonth() === now.getMonth() && d.getDate() === now.getDate() && d.getFullYear() < now.getFullYear(); });
-  if (past.length) {
-    const m = past[past.length - 1];
-    const yrs = now.getFullYear() - new Date(m.ts).getFullYear();
-    card.innerHTML = `<img src="${urlFor(m.cover, 'thumb')}" alt=""><div><b>On this day, ${plural(yrs, 'year')} ago</b><span>Tap to remember it.</span></div>`;
-    card.dataset.open = m.cover.id; card.hidden = false; return;
-  }
-  const thisMonth = photoMoments.filter((m) => monthKey(m.ts) === monthKey(now.getTime()));
-  if (thisMonth.length) {
-    const best = thisMonth.reduce((a, b) => (b.items.length > a.items.length ? b : a));
-    card.innerHTML = `<img src="${urlFor(best.cover, 'thumb')}" alt=""><div><b>This month: ${plural(thisMonth.length, 'moment')}</b><span>Your biggest one has ${plural(best.items.length, 'photo')}. Tap to open.</span></div>`;
-    card.dataset.open = best.cover.id; card.hidden = false; return;
-  }
-  card.hidden = true;
-}
-function jumpToDate(value) {
-  if (!value) return;
-  const days = $$('#timeline .day');
-  if (!days.length) { toast('Nothing on the timeline to jump to yet.', 'err'); return; }
-  // timeline is newest-first: land on the first day that is on/before the chosen date
-  const target = days.find((d) => d.dataset.day <= value) || days[days.length - 1];
-  target.scrollIntoView({ block: 'start' });
-  if (target.dataset.day === value) toast('Jumped to that day');
-  else if (target.dataset.day > value) toast('Nothing on or before that date. Showing your earliest day.', '', 2800);
-  else toast('No photos that day. Showing the nearest earlier day.', '', 2800);
-}
-
 /* ---------- 7. moment viewer ---------- */
 const viewer = { photoId: null };
 function openViewer(photoId) { viewer.photoId = photoId; openSheet('sheet-viewer'); renderViewer(); }
@@ -589,7 +557,7 @@ async function viewerAction(act) {
   const m = momentOf(viewer.photoId);
   if (!m) return;
   const cur = m.items.find((i) => i.id === viewer.photoId) || m.cover;
-  if (act === 'sticker') { openStudio(cur); return; }
+  if (act === 'sticker') { Sticker.open(cur); return; }
   if (act === 'cover') {
     for (const p of m.items) { p.pinCover = p.id === cur.id; await dbPut(p); }
     markChanged(); renderViewer(); toast('Cover updated ✓'); return;
@@ -637,131 +605,6 @@ function shareToast(res) {
   if (res === 'shared') toast('Shared ✓');
   else if (res === 'downloaded') toast('Sharing is not supported here, so it was downloaded instead ✓', '', 3200);
 }
-
-/* ---------- 8. sticker studio ---------- */
-const SHAPES = [{ id: 'circle', label: '⚪ Circle' }, { id: 'rounded', label: '▢ Rounded' }, { id: 'heart', label: '♥ Heart' }];
-const BORDERS = ['#ffffff', '#fff1c9', '#ffd3dc', '#cfeedd', '#cfe4ff', '#3b2f23'];
-const CAPCOLORS = ['#4a3d2e', '#d6336c', '#2f9e68', '#2f6fdb', '#e8590c', '#ffffff'];
-const EMOJIS = ['', '🐾', '❤️', '⭐', '😂', '🎂', '🦴', '🐟', '🌈'];
-const STK_FONT = '"Arial Rounded MT Bold","Nunito",ui-rounded,"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
-const stk = { src: null, bmp: null, shape: 'circle', border: '#ffffff', caption: '', capColor: '#4a3d2e', emoji: '', zoom: 1, panX: 0, panY: 0, savedClean: false, busy: false };
-const stkCanvas = $('#stkCanvas');
-
-function shapePath(x, shape, b) {
-  x.beginPath();
-  if (shape === 'circle') { x.ellipse(b.x + b.w / 2, b.y + b.h / 2, b.w / 2, b.h / 2, 0, 0, Math.PI * 2); }
-  else if (shape === 'rounded') {
-    const r = b.w * 0.2;
-    x.moveTo(b.x + r, b.y); x.arcTo(b.x + b.w, b.y, b.x + b.w, b.y + b.h, r);
-    x.arcTo(b.x + b.w, b.y + b.h, b.x, b.y + b.h, r); x.arcTo(b.x, b.y + b.h, b.x, b.y, r); x.arcTo(b.x, b.y, b.x + b.w, b.y, r);
-  } else {
-    const { x: X, y: Y, w, h } = b;
-    x.moveTo(X + w / 2, Y + h * 0.97);
-    x.bezierCurveTo(X - w * 0.12, Y + h * 0.58, X + w * 0.04, Y - h * 0.02, X + w / 2, Y + h * 0.28);
-    x.bezierCurveTo(X + w * 0.96, Y - h * 0.02, X + w * 1.12, Y + h * 0.58, X + w / 2, Y + h * 0.97);
-  }
-  x.closePath();
-}
-function drawSticker(c, st) {
-  const S = c.width, x = c.getContext('2d');
-  x.clearRect(0, 0, S, S);
-  const m = 44, box = { x: m, y: m, w: S - 2 * m, h: S - 2 * m };
-  // border (drawn first so it sits outside the photo) with a soft shadow
-  shapePath(x, st.shape, box);
-  x.save();
-  x.shadowColor = 'rgba(0,0,0,.28)'; x.shadowBlur = 14; x.shadowOffsetY = 4;
-  x.lineJoin = 'round'; x.lineWidth = 30; x.strokeStyle = st.border; x.stroke();
-  x.fillStyle = st.border; x.fill();
-  x.restore();
-  // photo, clipped to the shape, zoomed and panned (pan is clamped so the photo always covers the shape)
-  x.save();
-  shapePath(x, st.shape, box); x.clip();
-  const { w: iw, h: ih } = srcSize(st.bmp);
-  const k = Math.max(box.w / iw, box.h / ih) * st.zoom, dw = iw * k, dh = ih * k;
-  st.panX = clamp(st.panX, -(dw - box.w) / 2, (dw - box.w) / 2);
-  st.panY = clamp(st.panY, -(dh - box.h) / 2, (dh - box.h) / 2);
-  x.drawImage(st.bmp, box.x + box.w / 2 - dw / 2 + st.panX, box.y + box.h / 2 - dh / 2 + st.panY, dw, dh);
-  x.restore();
-  if (st.emoji) {
-    x.font = `${Math.round(S * 0.17)}px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif`;
-    x.textAlign = 'center'; x.textBaseline = 'middle';
-    x.fillText(st.emoji, S * 0.83, S * 0.17);
-  }
-  const text = st.caption.trim();
-  if (text) {
-    let fs = Math.round(S * 0.115);
-    x.textAlign = 'center'; x.textBaseline = 'middle';
-    do { x.font = `800 ${fs}px ${STK_FONT}`; fs -= 2; } while (x.measureText(text).width > S * 0.84 && fs > 16);
-    x.lineJoin = 'round'; x.lineWidth = Math.round(fs * 0.34); x.strokeStyle = st.capColor === '#ffffff' ? '#3b2f23' : '#ffffff';
-    x.strokeText(text, S / 2, S * 0.87); x.fillStyle = st.capColor; x.fillText(text, S / 2, S * 0.87);
-  }
-}
-const redrawSticker = () => { if (stk.bmp) drawSticker(stkCanvas, stk); };
-
-async function openStudio(rec) {
-  try {
-    if (stk.bmp && stk.bmp.close) stk.bmp.close();
-    stk.bmp = await blobToBitmap(rec.blob);
-  } catch (e) { toast('Could not open that photo: ' + e.message, 'err'); return; }
-  stk.src = rec;
-  resetStudio(false);
-  openSheet('sheet-sticker');
-}
-function resetStudio(keepToast = true) {
-  Object.assign(stk, { shape: 'circle', border: '#ffffff', caption: '', capColor: '#4a3d2e', emoji: '', zoom: 1, panX: 0, panY: 0, savedClean: false });
-  $('#stkCaption').value = ''; $('#stkZoom').value = 100; $('#stkZoomOut').textContent = '100%';
-  buildStudioControls(); redrawSticker(); syncStudioButtons();
-  if (keepToast) toast('Sticker reset');
-}
-function buildStudioControls() {
-  $('#stkShapes').innerHTML = SHAPES.map((s) => `<button data-shape="${s.id}" class="${stk.shape === s.id ? 'on' : ''}">${s.label}</button>`).join('');
-  $('#stkBorders').innerHTML = BORDERS.map((c) => `<button data-border="${c}" class="${stk.border === c ? 'on' : ''}" style="background:${c}" aria-label="Border ${c}"></button>`).join('');
-  $('#stkCapColors').innerHTML = CAPCOLORS.map((c) => `<button data-capcolor="${c}" class="${stk.capColor === c ? 'on' : ''}" style="background:${c}" aria-label="Caption colour ${c}"></button>`).join('');
-  $('#stkEmojis').innerHTML = EMOJIS.map((e) => `<button data-emoji="${e}" class="${stk.emoji === e ? 'on' : ''}">${e || 'None'}</button>`).join('');
-}
-function studioChanged() { stk.savedClean = false; redrawSticker(); syncStudioButtons(); }
-function syncStudioButtons() {
-  const b = $('#stkSave');
-  b.textContent = stk.savedClean ? 'Saved ✓' : 'Save to timeline';
-  b.disabled = stk.savedClean || stk.busy;
-}
-async function studioBlob() { return toBlob(stkCanvas, 'image/png'); }
-async function saveSticker() {
-  if (stk.busy || stk.savedClean) return;      // repeated clicks do nothing
-  stk.busy = true; syncStudioButtons();
-  try {
-    const blob = await studioBlob();
-    const small = drawScaled(stkCanvas, 320);
-    const rec = { id: uid(), ts: Date.now(), kind: 'sticker', blob, thumb: await toBlob(small, 'image/png'), hash: '0000000000000000', sharp: 0, tags: [], pinCover: false, demo: false, srcId: stk.src && stk.src.id };
-    await dbPut(rec); state.photos.push(rec); markChanged();
-    stk.savedClean = true;
-    toast('Sticker saved to your timeline ✓');
-  } catch (e) { toast('Could not save the sticker: ' + (e.message || e), 'err', 3500); }
-  finally { stk.busy = false; syncStudioButtons(); }
-}
-async function shareSticker() {
-  if (stk.busy) return;
-  stk.busy = true;
-  try {
-    if (!stk.caption.trim() && !confirm('This sticker has no caption. Share it anyway?')) return;
-    const res = await shareBlob(await studioBlob(), `pawtime-sticker-${Date.now()}.png`);
-    shareToast(res);
-  } catch (e) { toast('Could not share: ' + (e.message || e), 'err', 3500); }
-  finally { stk.busy = false; syncStudioButtons(); }
-}
-// drag the photo inside the sticker shape
-(function enablePan() {
-  let drag = null;
-  stkCanvas.addEventListener('pointerdown', (e) => { drag = { x: e.clientX, y: e.clientY, px: stk.panX, py: stk.panY }; stkCanvas.setPointerCapture(e.pointerId); });
-  stkCanvas.addEventListener('pointermove', (e) => {
-    if (!drag) return;
-    const scale = stkCanvas.width / stkCanvas.getBoundingClientRect().width;
-    stk.panX = drag.px + (e.clientX - drag.x) * scale; stk.panY = drag.py + (e.clientY - drag.y) * scale;
-    studioChanged();
-  });
-  const end = () => { drag = null; };
-  stkCanvas.addEventListener('pointerup', end); stkCanvas.addEventListener('pointercancel', end);
-})();
 
 /* ---------- 9. sample photos (so anyone can try it without a camera) ---------- */
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
@@ -842,56 +685,6 @@ async function loadDemo() {
   setView('timeline');
   toast(`Added ${total} sample photos. Notice how similar shots fold into stacks ✓`, '', 3800);
 }
-async function clearDemo() {
-  const ids = state.photos.filter((p) => p.demo).map((p) => p.id);
-  if (!ids.length) { toast('There are no sample photos to remove.'); return; }
-  await removePhotos(ids);
-  if (state.profile && state.profile.demo) { state.profile = { name: '', birthday: '', skipped: true }; await metaSet('profile', state.profile); }
-  renderSettings(); renderTimeline(); toast('Sample photos removed ✓');
-}
-
-/* ---------- 10. settings, onboarding, backup ---------- */
-function renderSettings() {
-  $('#setName').value = (state.profile && state.profile.name) || '';
-  $('#setBirthday').value = (state.profile && state.profile.birthday) || '';
-  $('#setSim').value = state.settings.sim;
-  $('#setWin').value = state.settings.windowMin;
-  updateSettingsPreview();
-}
-function updateSettingsPreview() {
-  const s = state.settings;
-  $('#setSimOut').textContent = s.sim <= 4 ? 'very strict' : s.sim <= 12 ? 'balanced' : 'very loose';
-  $('#setWinOut').textContent = `${s.windowMin} min`;
-  const photos = state.photos.filter((p) => p.kind === 'photo').length;
-  const moments = getMoments().filter((m) => !m.sticker).length;
-  $('#setPreview').textContent = photos ? `Right now: ${plural(photos, 'photo')} → ${plural(moments, 'moment')}.` : 'Take or add some photos to see the effect here.';
-}
-async function saveProfile() {
-  state.profile = { ...(state.profile || {}), name: $('#setName').value.trim(), birthday: $('#setBirthday').value, skipped: false, demo: false };
-  await metaSet('profile', state.profile);
-  state.rev++; state.timelineDirty = true; updateChrome();
-}
-async function saveSettings() { await metaSet('settings', state.settings); }
-function blobToDataURL(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
-async function exportBackup() {
-  if (!state.photos.length) { toast('Nothing to export yet.', 'err'); return; }
-  try {
-    toast('Preparing backup…', '', 1500);
-    const out = { app: 'PawTime', version: 1, exportedAt: new Date().toISOString(), profile: state.profile, settings: state.settings, photos: [] };
-    for (const p of state.photos) out.photos.push({ id: p.id, ts: p.ts, kind: p.kind, tags: p.tags, pinCover: p.pinCover, image: await blobToDataURL(p.blob) });
-    downloadBlob(new Blob([JSON.stringify(out)], { type: 'application/json' }), `pawtime-backup-${dayKey(Date.now())}.json`);
-    toast('Backup downloaded ✓');
-  } catch (e) { toast('Backup failed: ' + (e.message || e), 'err', 3500); }
-}
-async function wipeAll() {
-  if (!confirm('Delete ALL photos, stickers and settings from this device? This cannot be undone.')) return;
-  await dbClear();
-  for (const k of [...urls.keys()]) { URL.revokeObjectURL(urls.get(k)); urls.delete(k); }
-  state.photos = []; state.filterTag = null; state.profile = { name: '', birthday: '', skipped: true };
-  await metaSet('profile', state.profile);
-  markChanged(); renderSettings(); renderTimeline(); toast('All data deleted');
-}
-
 /* ---------- 11. wiring and start-up ---------- */
 function wire() {
   $$('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
@@ -915,12 +708,10 @@ function wire() {
     clearTimeout(quickTagTimer); quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 4000);
   });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
-  $('#reviewCard').addEventListener('click', (e) => openViewer(e.currentTarget.dataset.open));
   $('#filterChips').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]'); if (!b) return;
     state.filterTag = b.dataset.filter || null; renderTimeline();
   });
-  $('#jumpDate').addEventListener('change', (e) => jumpToDate(e.target.value));
 
   $$('[data-close]').forEach((b) => b.addEventListener('click', () => { closeSheet(b.dataset.close); if (b.dataset.close === 'sheet-viewer' || b.dataset.close === 'sheet-sticker') renderTimeline(); }));
   $('#vStrip').addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { viewer.photoId = b.dataset.pick; renderViewer(); } });
@@ -930,33 +721,6 @@ function wire() {
     await toggleTagOn(m.items, b.dataset.vtag); renderViewer();
   });
   $('#vActions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) viewerAction(b.dataset.act); });
-
-  $('#stkCaption').addEventListener('input', (e) => { stk.caption = e.target.value; studioChanged(); });
-  $('#stkZoom').addEventListener('input', (e) => { stk.zoom = e.target.value / 100; $('#stkZoomOut').textContent = e.target.value + '%'; studioChanged(); });
-  $('#stkShapes').addEventListener('click', (e) => { const b = e.target.closest('[data-shape]'); if (!b) return; stk.shape = b.dataset.shape; buildStudioControls(); studioChanged(); });
-  $('#stkBorders').addEventListener('click', (e) => { const b = e.target.closest('[data-border]'); if (!b) return; stk.border = b.dataset.border; buildStudioControls(); studioChanged(); });
-  $('#stkCapColors').addEventListener('click', (e) => { const b = e.target.closest('[data-capcolor]'); if (!b) return; stk.capColor = b.dataset.capcolor; buildStudioControls(); studioChanged(); });
-  $('#stkEmojis').addEventListener('click', (e) => { const b = e.target.closest('[data-emoji]'); if (!b) return; stk.emoji = b.dataset.emoji; buildStudioControls(); studioChanged(); });
-  $('#stkReset').addEventListener('click', () => resetStudio(true));
-  $('#stkSave').addEventListener('click', saveSticker);
-  $('#stkShare').addEventListener('click', shareSticker);
-
-  const openSettings = () => { renderSettings(); openSheet('sheet-settings'); };
-  $('#btnSettings').addEventListener('click', openSettings);
-  $('#petBadge').addEventListener('click', openSettings);
-  $('#setName').addEventListener('change', saveProfile);
-  $('#setBirthday').addEventListener('change', async () => { await saveProfile(); renderTimeline(); });
-  let simTimer;
-  const onFold = () => {
-    state.settings.sim = +$('#setSim').value; state.settings.windowMin = +$('#setWin').value;
-    state.rev++; state.timelineDirty = true; updateSettingsPreview();
-    clearTimeout(simTimer); simTimer = setTimeout(saveSettings, 300);
-  };
-  $('#setSim').addEventListener('input', onFold); $('#setWin').addEventListener('input', onFold);
-  $('#btnSample').addEventListener('click', loadDemo);
-  $('#btnClearSample').addEventListener('click', clearDemo);
-  $('#btnExport').addEventListener('click', exportBackup);
-  $('#btnWipe').addEventListener('click', wipeAll);
 
   $('#obStart').addEventListener('click', async () => {
     state.profile = { name: $('#obName').value.trim(), birthday: $('#obBirthday').value, skipped: false };

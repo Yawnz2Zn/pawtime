@@ -20,7 +20,6 @@
   <header class="topbar">
     <div class="brand">🐾 PawTime</div>
     <button id="petBadge" class="pet-badge" aria-label="Pet profile and settings">My pet</button>
-    <button id="btnSettings" class="icon-btn" aria-label="Settings">⚙</button>
   </header>
 
   <main>
@@ -69,12 +68,7 @@
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-head">
           <div id="statLine" class="stat-line"></div>
-          <button id="reviewCard" class="review" hidden></button>
           <div id="filterChips" class="chips" role="group" aria-label="Filter by tag"></div>
-          <div class="date-jump">
-            <label for="jumpDate">Jump to date</label>
-            <input type="date" id="jumpDate">
-          </div>
         </div>
         <div id="timeline"></div>
         <div id="emptyState" class="empty" hidden></div>
@@ -124,23 +118,21 @@
   <!-- STICKER STUDIO -->
   <div id="sheet-sticker" class="sheet" hidden>
     <div class="sheet-bar">
-      <button class="icon-btn" data-close="sheet-sticker" aria-label="Close">✕</button>
+      <button id="stkClose" class="icon-btn" aria-label="Close">✕</button>
       <h2>Sticker Studio</h2>
       <button id="stkReset" class="link-btn">Reset</button>
     </div>
     <div class="sheet-body">
       <div class="stk-stage">
         <div class="checker"><canvas id="stkCanvas" width="512" height="512" aria-label="Sticker preview"></canvas></div>
-        <p class="hint">Drag the photo to reposition it</p>
       </div>
-      <div class="field"><label for="stkCaption">Caption</label>
-        <input id="stkCaption" maxlength="24" placeholder="e.g. Treat time!" autocomplete="off"></div>
-      <div class="field"><span class="lbl">Shape</span><div id="stkShapes" class="seg"></div></div>
-      <div class="field"><span class="lbl">Border</span><div id="stkBorders" class="swatches"></div></div>
-      <div class="field"><span class="lbl">Caption colour</span><div id="stkCapColors" class="swatches"></div></div>
-      <div class="field"><span class="lbl">Emoji</span><div id="stkEmojis" class="seg wrap"></div></div>
-      <div class="field"><label for="stkZoom">Zoom <output id="stkZoomOut">100%</output></label>
-        <input id="stkZoom" type="range" min="100" max="250" value="100"></div>
+      <div id="stkLayerPanel" class="layer-panel" hidden></div>
+      <div class="stk-tabs" role="tablist">
+        <button type="button" class="stk-tab on" data-stk-tab="photo"><span>🖼</span>Photo</button>
+        <button type="button" class="stk-tab" data-stk-tab="text"><span>🔤</span>Text</button>
+        <button type="button" class="stk-tab" data-stk-tab="decor"><span>✨</span>Emoji</button>
+      </div>
+      <div id="stkPanel" class="stk-panel"></div>
     </div>
     <div class="sheet-foot">
       <button id="stkSave" class="btn">Save to timeline</button>
@@ -148,39 +140,9 @@
     </div>
   </div>
 
-  <!-- SETTINGS -->
-  <div id="sheet-settings" class="sheet" hidden>
-    <div class="sheet-bar">
-      <button class="icon-btn" data-close="sheet-settings" aria-label="Close">✕</button>
-      <h2>Settings</h2>
-      <span></span>
-    </div>
-    <div class="sheet-body">
-      <h3>Pet profile</h3>
-      <div class="field"><label for="setName">Name</label><input id="setName" maxlength="24" autocomplete="off"></div>
-      <div class="field"><label for="setBirthday">Birthday</label><input id="setBirthday" type="date"></div>
-
-      <h3>Smart folding</h3>
-      <p class="muted small">Photos taken close together that look alike are folded into one “moment”. Nothing is deleted.</p>
-      <div class="field"><label for="setSim">Similarity <output id="setSimOut"></output></label>
-        <input id="setSim" type="range" min="0" max="24" step="1"></div>
-      <div class="field"><label for="setWin">Time window <output id="setWinOut"></output></label>
-        <input id="setWin" type="range" min="2" max="180" step="1"></div>
-      <p id="setPreview" class="preview"></p>
-
-      <h3>Data</h3>
-      <p class="muted small">Everything is stored only on this device (in the app's own storage, not your phone gallery).</p>
-      <div class="btn-col">
-        <button id="btnSample" class="btn">Add sample pet photos</button>
-        <button id="btnClearSample" class="btn">Remove sample photos</button>
-        <button id="btnExport" class="btn">Export backup (.json)</button>
-        <button id="btnWipe" class="btn btn-danger">Delete all data</button>
-      </div>
-    </div>
-  </div>
-
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
 <script src="app.js"></script>
+<script src="sticker.js"></script>
 </body>
 </html>

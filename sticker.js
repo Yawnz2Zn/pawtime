@@ -1,0 +1,451 @@
+'use strict';
+/* =====================================================================
+   Sticker Studio (sticker.js)
+   Turns a pet photo into a sticker: pick a frame, then add as many text, emoji and
+   decoration layers as you like, drag / resize / rotate them, and share the PNG.
+   Everything is drawn with the Canvas 2D API, so the preview updates on every touch.
+
+   Sections:  1 state   2 shapes   3 layers (emoji, decor, text)   4 drawing the sticker
+              5 touch and mouse handling   6 panels (the controls)   7 save and share
+   ===================================================================== */
+const Sticker = (() => {
+  const cv = $('#stkCanvas');
+  const g = cv.getContext('2d');
+  const SQ = 512;                                   // a sticker is 512 x 512 px, the usual chat-sticker size
+
+  /* ---------- 1. state ---------- */
+  const SHAPES = [['circle', 'Circle'], ['oval', 'Oval'], ['rounded', 'Rounded'], ['heart', 'Heart'], ['star', 'Star'], ['burst', 'Burst'], ['badge', 'Badge']];
+  const ASPECT = { oval: 0.78 };                    // width / height of the frame box (default 1)
+  const BORDERS = ['#ffffff', '#fff3b0', '#ffd1e0', '#c9f2d9', '#cfe4ff', '#ffb703', '#ff5d8f', '#3b2f23'];
+  const EMOJIS = ['🐾', '❤️', '⭐', '✨', '😂', '🥰', '😍', '😴', '🎂', '🦴', '🐟', '🍖', '🌈', '🌸', '🎀', '👑', '💤', '💢', '‼️', '❓', '🔥', '🎉', '🍓', '☀️'];
+  const DECOS = [['star', 'Star', '#ffd43b'], ['sparkle', 'Sparkle', '#ffffff'], ['heart', 'Heart', '#ff6b9d'], ['burst', 'Burst', '#ffe066'],
+                 ['bubble', 'Bubble', '#ffffff'], ['paw', 'Paw', '#a47148'], ['cloud', 'Cloud', '#ffffff'], ['flower', 'Flower', '#ff9ecb']];
+  const SWATCH = ['#ffffff', '#222222', '#ff3d81', '#ff8c42', '#ffd43b', '#37b24d', '#1c7ed6', '#7048e8', '#ff9ecb', '#a47148'];
+  const TEXT_STYLES = [['pop', 'Pop', 'Wow!', '#ff3d81'], ['cute', 'Cute', 'Cutie', '#ff6b9d'], ['meme', 'Meme', 'WHEN TREATS?', '#ffffff'],
+                       ['script', 'Script', 'Kitty Kitty', '#d6336c'], ['bubble', 'Bubble', 'Hi!', '#333333'], ['plain', 'Plain', 'Hello', '#333333']];
+  const ARIAL_ROUND = '"Arial Rounded MT Bold","Nunito",ui-rounded,"Hiragino Maru Gothic ProN","PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+  const EMOJI_FONT = '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+
+  const st = {
+    rec: null, bmp: null, w: SQ, h: SQ,
+    shape: 'circle', border: '#ffffff', borderW: 18, edge2: false, edge2Color: '#ff7eb6',
+    zoom: 1, panX: 0, panY: 0,
+    layers: [], sel: null, nextId: 1,
+    tab: 'photo', tool: 'move', dirty: false, savedClean: false, busy: false
+  };
+  const zoomMin = () => (st.cutOn ? 0.4 : 1);       // a cut-out may be shrunk, a photo inside a frame may not
+  let raf = 0;
+  const redraw = () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(g, true); }); };
+  const redrawNow = () => { if (raf) { cancelAnimationFrame(raf); raf = 0; } render(g, true); };
+  const touch = () => { st.dirty = true; st.savedClean = false; syncFoot(); };
+
+  /* ---------- 2. shapes ---------- */
+  function roundedPoly(x, pts, r) {                 // polygon with softly rounded corners
+    const n = pts.length;
+    x.moveTo((pts[0][0] + pts[n - 1][0]) / 2, (pts[0][1] + pts[n - 1][1]) / 2);
+    for (let i = 0; i < n; i++) {
+      const p = pts[i], q = pts[(i + 1) % n];
+      x.arcTo(p[0], p[1], (p[0] + q[0]) / 2, (p[1] + q[1]) / 2, r);
+    }
+    x.closePath();
+  }
+  function starPts(cx, cy, R, r, n, rot) {
+    const pts = [];
+    for (let i = 0; i < n * 2; i++) { const a = rot + i * Math.PI / n, rad = i % 2 ? r : R; pts.push([cx + Math.cos(a) * rad, cy + Math.sin(a) * rad]); }
+    return pts;
+  }
+  function shapePath(x, shape, b) {                 // b = {x, y, w, h}; builds the path, does not paint
+    const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
+    x.beginPath();
+    if (shape === 'circle' || shape === 'oval') x.ellipse(cx, cy, b.w / 2, b.h / 2, 0, 0, Math.PI * 2);
+    else if (shape === 'rounded') {
+      const r = Math.min(b.w, b.h) * 0.22;
+      x.moveTo(b.x + r, b.y); x.arcTo(b.x + b.w, b.y, b.x + b.w, b.y + b.h, r); x.arcTo(b.x + b.w, b.y + b.h, b.x, b.y + b.h, r);
+      x.arcTo(b.x, b.y + b.h, b.x, b.y, r); x.arcTo(b.x, b.y, b.x + b.w, b.y, r); x.closePath();
+    } else if (shape === 'heart') {
+      const { x: X, y: Y, w, h } = b;
+      x.moveTo(X + w / 2, Y + h * 0.97);
+      x.bezierCurveTo(X - w * 0.12, Y + h * 0.58, X + w * 0.04, Y - h * 0.02, X + w / 2, Y + h * 0.28);
+      x.bezierCurveTo(X + w * 0.96, Y - h * 0.02, X + w * 1.12, Y + h * 0.58, X + w / 2, Y + h * 0.97);
+      x.closePath();
+    } else if (shape === 'star') {
+      const R = Math.min(b.w, b.h) / 2 * 1.12; roundedPoly(x, starPts(cx, cy + R * 0.06, R, R * 0.5, 5, -Math.PI / 2), R * 0.07);
+    } else if (shape === 'burst') {
+      const R = Math.min(b.w, b.h) / 2 * 1.06; roundedPoly(x, starPts(cx, cy, R, R * 0.8, 14, -Math.PI / 2), R * 0.03);
+    } else if (shape === 'badge') {
+      const R = Math.min(b.w, b.h) / 2 * 0.97, N = 220;
+      for (let i = 0; i <= N; i++) { const a = i / N * Math.PI * 2, rad = R * (0.94 + 0.06 * Math.cos(a * 12)); const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad; if (i) x.lineTo(px, py); else x.moveTo(px, py); }
+      x.closePath();
+    }
+  }
+
+  /* ---------- 3. layers: emoji, decor shapes and text ---------- */
+  function decoPath(x, kind, s) {                   // path centred on (0,0) inside a box of size s
+    x.beginPath();
+    if (kind === 'star') roundedPoly(x, starPts(0, s * 0.03, s * 0.52, s * 0.24, 5, -Math.PI / 2), s * 0.05);
+    else if (kind === 'burst') roundedPoly(x, starPts(0, 0, s * 0.5, s * 0.36, 14, -Math.PI / 2), s * 0.02);
+    else if (kind === 'sparkle') {
+      x.moveTo(0, -s / 2); x.quadraticCurveTo(s * 0.04, -s * 0.04, s / 2, 0); x.quadraticCurveTo(s * 0.04, s * 0.04, 0, s / 2);
+      x.quadraticCurveTo(-s * 0.04, s * 0.04, -s / 2, 0); x.quadraticCurveTo(-s * 0.04, -s * 0.04, 0, -s / 2); x.closePath();
+    } else if (kind === 'heart') {
+      x.moveTo(0, s * 0.46); x.bezierCurveTo(-s * 0.66, s * 0.04, -s * 0.42, -s * 0.52, 0, -s * 0.2); x.bezierCurveTo(s * 0.42, -s * 0.52, s * 0.66, s * 0.04, 0, s * 0.46); x.closePath();
+    } else if (kind === 'bubble') {
+      const w = s, h = s * 0.62, r = s * 0.2, x0 = -w / 2, y0 = -h / 2 - s * 0.06;
+      x.moveTo(x0 + r, y0); x.arcTo(x0 + w, y0, x0 + w, y0 + h, r); x.arcTo(x0 + w, y0 + h, x0, y0 + h, r); x.arcTo(x0, y0 + h, x0, y0, r); x.arcTo(x0, y0, x0 + w, y0, r); x.closePath();
+      x.moveTo(-s * 0.26, y0 + h - 2); x.lineTo(-s * 0.36, s * 0.5); x.lineTo(-s * 0.02, y0 + h - 2); x.closePath();
+    } else if (kind === 'cloud') {
+      for (const [cx, cy, r] of [[-0.24, 0.08, 0.2], [0, -0.06, 0.28], [0.25, 0.06, 0.22], [-0.02, 0.12, 0.2]]) { x.moveTo((cx + r) * s, cy * s); x.arc(cx * s, cy * s, r * s, 0, Math.PI * 2); }
+    } else if (kind === 'paw') {
+      const e = (cx, cy, rx, ry, rot) => { x.moveTo((cx + rx) * s, cy * s); x.ellipse(cx * s, cy * s, rx * s, ry * s, rot, 0, Math.PI * 2); };
+      e(0, 0.17, 0.27, 0.22, 0); e(-0.3, -0.06, 0.1, 0.14, -0.4); e(-0.11, -0.25, 0.1, 0.15, -0.12); e(0.11, -0.25, 0.1, 0.15, 0.12); e(0.3, -0.06, 0.1, 0.14, 0.4);
+    } else if (kind === 'flower') {
+      for (let i = 0; i < 6; i++) { const a = i * Math.PI / 3, cx = Math.cos(a) * s * 0.26, cy = Math.sin(a) * s * 0.26; x.moveTo(cx + s * 0.2, cy); x.arc(cx, cy, s * 0.2, 0, Math.PI * 2); }
+    }
+  }
+  function drawDeco(x, kind, color, s) {
+    decoPath(x, kind, s);
+    x.save(); x.lineJoin = 'round'; x.lineWidth = s * 0.11; x.strokeStyle = '#ffffff';
+    x.shadowColor = 'rgba(0,0,0,.28)'; x.shadowBlur = s * 0.06; x.shadowOffsetY = s * 0.025; x.stroke(); x.restore();
+    x.fillStyle = color; x.fill();
+    if (kind === 'flower') { x.beginPath(); x.arc(0, 0, s * 0.13, 0, Math.PI * 2); x.fillStyle = '#ffe066'; x.fill(); }
+    if (kind === 'bubble') { x.fillStyle = 'rgba(0,0,0,.0)'; }
+  }
+
+  const textPx = (l) => 64 * l.s;
+  function textFont(l) {
+    const px = Math.round(textPx(l));
+    switch (l.font) {
+      case 'pop': return `italic 900 ${px}px "Arial Black","Impact","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif`;
+      case 'meme': return `900 ${px}px Impact,"Arial Black","Anton","PingFang SC","Microsoft YaHei",sans-serif`;
+      case 'script': return `italic 700 ${px}px "Segoe Script","Brush Script MT","Snell Roundhand","Apple Chancery","Comic Sans MS","PingFang SC",cursive`;
+      case 'plain': return `600 ${px}px system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif`;
+      default: return `800 ${px}px ${ARIAL_ROUND}`;   // cute, bubble
+    }
+  }
+  const textValue = (l) => (l.font === 'meme' ? l.text.toUpperCase() : l.text) || ' ';
+  function layerBox(l) {                            // unrotated size of a layer, used for hit-testing and the selection frame
+    if (l.type === 'emoji') { const s = 100 * l.s * 1.15; return { w: s, h: s }; }
+    if (l.type === 'deco') { const s = 120 * l.s * (l.kind === 'bubble' ? 1.15 : 1); return { w: s, h: s * (l.kind === 'bubble' ? 1.0 : 1) }; }
+    g.save(); g.font = textFont(l);
+    const w = g.measureText(textValue(l)).width; g.restore();
+    const px = textPx(l);
+    return l.font === 'bubble' ? { w: w + px * 0.9, h: px * 1.9 } : { w: w + px * 0.4, h: px * 1.3 };
+  }
+  function drawText(x, l) {
+    const px = textPx(l), t = textValue(l);
+    x.font = textFont(l); x.textAlign = 'center'; x.textBaseline = 'middle'; x.lineJoin = 'round';
+    if (l.font === 'plain') { x.fillStyle = l.color; x.fillText(t, 0, 0); return; }
+    if (l.font === 'meme') {
+      x.lineWidth = px * 0.17; x.strokeStyle = '#000'; x.strokeText(t, 0, 0); x.fillStyle = l.color; x.fillText(t, 0, 0); return;
+    }
+    if (l.font === 'pop') {                         // comic "pop": white sticker edge + chunky offset shadow
+      const d = px * 0.07;
+      x.lineWidth = px * 0.3; x.strokeStyle = '#fff'; x.strokeText(t, 0, 0);
+      for (let i = 5; i >= 1; i--) { x.fillStyle = '#2b1d4a'; x.fillText(t, d * i * 0.5, d * i * 0.5); }
+      x.lineWidth = px * 0.1; x.strokeStyle = '#2b1d4a'; x.strokeText(t, 0, 0);
+      x.fillStyle = l.color; x.fillText(t, 0, 0); return;
+    }
+    if (l.font === 'bubble') {
+      const w = x.measureText(t).width + px * 0.9, h = px * 1.3, r = h * 0.45, x0 = -w / 2, y0 = -h / 2 - px * 0.1;
+      x.beginPath(); x.moveTo(x0 + r, y0); x.arcTo(x0 + w, y0, x0 + w, y0 + h, r); x.arcTo(x0 + w, y0 + h, x0, y0 + h, r); x.arcTo(x0, y0 + h, x0, y0, r); x.arcTo(x0, y0, x0 + w, y0, r); x.closePath();
+      x.moveTo(-w * 0.18, y0 + h - 2); x.lineTo(-w * 0.3, y0 + h + px * 0.5); x.lineTo(-w * 0.04, y0 + h - 2); x.closePath();
+      x.save(); x.shadowColor = 'rgba(0,0,0,.25)'; x.shadowBlur = px * 0.12; x.shadowOffsetY = px * 0.05; x.lineWidth = px * 0.09; x.strokeStyle = '#2b2b2b'; x.stroke(); x.restore();
+      x.fillStyle = '#fff'; x.fill();
+      x.fillStyle = l.color; x.fillText(t, 0, y0 + h / 2 + px * 0.03); return;
+    }
+    // cute and script: soft white sticker edge
+    x.save(); x.shadowColor = 'rgba(0,0,0,.25)'; x.shadowBlur = px * 0.1; x.shadowOffsetY = px * 0.04;
+    x.lineWidth = px * (l.font === 'script' ? 0.22 : 0.28); x.strokeStyle = '#fff'; x.strokeText(t, 0, 0); x.restore();
+    x.fillStyle = l.color; x.fillText(t, 0, 0);
+  }
+  function drawLayer(x, l) {
+    x.save(); x.translate(l.x, l.y); x.rotate(l.r);
+    if (l.type === 'emoji') {
+      x.font = `${Math.round(100 * l.s)}px ${EMOJI_FONT}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.shadowColor = 'rgba(0,0,0,.22)'; x.shadowBlur = 8 * l.s; x.shadowOffsetY = 3 * l.s; x.fillText(l.ch, 0, 0);
+    } else if (l.type === 'deco') drawDeco(x, l.kind, l.color, 120 * l.s);
+    else drawText(x, l);
+    x.restore();
+  }
+  function addLayer(props) {
+    const n = st.layers.length;
+    const l = Object.assign({ id: st.nextId++, x: st.w / 2 + ((n * 37) % 90) - 45, y: st.h / 2 + ((n * 53) % 90) - 45, s: 1, r: 0 }, props);
+    st.layers.push(l); st.sel = l.id; touch(); renderLayerPanel(); redraw(); return l;
+  }
+  const layerById = (id) => st.layers.find((l) => l.id === id);
+  function removeLayer(id) { st.layers = st.layers.filter((l) => l.id !== id); if (st.sel === id) st.sel = null; touch(); renderLayerPanel(); redraw(); }
+  function select(id) { if (st.sel !== id) { st.sel = id; renderLayerPanel(); } redraw(); }
+
+  /* ---------- 4. drawing the whole sticker ---------- */
+  function baseArea(W, H) {
+    const m = st.borderW + (st.edge2 ? 9 : 0) + 26;
+    return { cx: W / 2, cy: H / 2, size: Math.min(W, H) - 2 * m };
+  }
+  function frameBox(W, H) {
+    const a = baseArea(W, H), asp = ASPECT[st.shape] || 1;
+    return { x: a.cx - a.size * asp / 2, y: a.cy - a.size / 2, w: a.size * asp, h: a.size };
+  }
+  function drawFrame(x, W, H) {
+    const b = frameBox(W, H);
+    if (st.borderW > 0 || st.edge2) {
+      shapePath(x, st.shape, b);
+      x.save(); x.lineJoin = 'round';
+      x.shadowColor = 'rgba(0,0,0,.3)'; x.shadowBlur = 14; x.shadowOffsetY = 4;
+      if (st.edge2) { x.lineWidth = 2 * (st.borderW + 8); x.strokeStyle = st.edge2Color; x.stroke(); x.shadowColor = 'transparent'; }
+      x.lineWidth = 2 * st.borderW; x.strokeStyle = st.border; x.stroke();
+      x.fillStyle = st.border; x.fill();
+      x.restore();
+    }
+    x.save();
+    shapePath(x, st.shape, b); x.clip();
+    const iw = st.bmp.width || st.bmp.naturalWidth, ih = st.bmp.height || st.bmp.naturalHeight;
+    const k = Math.max(b.w / iw, b.h / ih) * st.zoom, dw = iw * k, dh = ih * k;
+    st.panX = clamp(st.panX, -(dw - b.w) / 2, (dw - b.w) / 2); st.panY = clamp(st.panY, -(dh - b.h) / 2, (dh - b.h) / 2);
+    x.drawImage(st.bmp, b.x + b.w / 2 - dw / 2 + st.panX, b.y + b.h / 2 - dh / 2 + st.panY, dw, dh);
+    x.restore();
+  }
+  function drawSelection(x, l) {
+    const bx = layerBox(l), hs = 14 * (cv.width / Math.max(cv.getBoundingClientRect().width, 1));
+    x.save(); x.translate(l.x, l.y); x.rotate(l.r);
+    x.lineWidth = 1.6 * hs / 14; x.setLineDash([6 * hs / 14, 5 * hs / 14]); x.strokeStyle = '#1c7ed6'; x.strokeRect(-bx.w / 2, -bx.h / 2, bx.w, bx.h); x.setLineDash([]);
+    const handle = (hx, hy, fill, glyph) => {
+      x.beginPath(); x.arc(hx, hy, hs, 0, Math.PI * 2); x.fillStyle = fill; x.fill(); x.lineWidth = 2; x.strokeStyle = '#fff'; x.stroke();
+      x.fillStyle = '#fff'; x.font = `700 ${Math.round(hs * 1.2)}px sans-serif`; x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillText(glyph, hx, hy + 1);
+    };
+    handle(-bx.w / 2, -bx.h / 2, '#e03131', '×');
+    handle(bx.w / 2, bx.h / 2, '#1c7ed6', '↻');
+    x.restore();
+  }
+  function render(x, ui) {
+    const W = st.w, H = st.h;
+    x.clearRect(0, 0, W, H);
+    if (!st.bmp) return;
+    drawFrame(x, W, H);
+    for (const l of st.layers) drawLayer(x, l);
+    if (ui && st.tool === 'move') { const l = layerById(st.sel); if (l) drawSelection(x, l); }
+  }
+
+  /* ---------- 5. touch and mouse ---------- */
+  const ptrs = new Map();
+  let gesture = null;
+  const toCanvas = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * cv.width / r.width, y: (e.clientY - r.top) * cv.height / r.height }; };
+  const cssScale = () => cv.width / Math.max(cv.getBoundingClientRect().width, 1);
+  function toLocal(l, p) { const dx = p.x - l.x, dy = p.y - l.y, c = Math.cos(-l.r), s = Math.sin(-l.r); return { x: dx * c - dy * s, y: dx * s + dy * c }; }
+  function fromLocal(l, q) { const c = Math.cos(l.r), s = Math.sin(l.r); return { x: l.x + q.x * c - q.y * s, y: l.y + q.x * s + q.y * c }; }
+  function hitHandle(l, p) {
+    const bx = layerBox(l), r = 22 * cssScale();
+    const del = fromLocal(l, { x: -bx.w / 2, y: -bx.h / 2 }), xf = fromLocal(l, { x: bx.w / 2, y: bx.h / 2 });
+    if (Math.hypot(p.x - del.x, p.y - del.y) < r) return 'del';
+    if (Math.hypot(p.x - xf.x, p.y - xf.y) < r) return 'xf';
+    return null;
+  }
+  function hitLayer(p) {
+    for (let i = st.layers.length - 1; i >= 0; i--) {
+      const l = st.layers[i], q = toLocal(l, p), bx = layerBox(l);
+      if (Math.abs(q.x) <= bx.w / 2 && Math.abs(q.y) <= bx.h / 2) return l;
+    }
+    return null;
+  }
+  const pair = () => { const [a, b] = [...ptrs.values()]; return { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, a: Math.atan2(b.y - a.y, b.x - a.x) }; };
+
+  cv.addEventListener('pointerdown', (e) => {
+    if (!st.bmp) return;
+    cv.setPointerCapture(e.pointerId);
+    const p = toCanvas(e); ptrs.set(e.pointerId, p);
+    if (ptrs.size === 2) {                          // two fingers: pinch to resize and rotate the selected layer, or zoom the photo
+      const q = pair(), l = layerById(st.sel);
+      gesture = { type: 'pinch', d0: q.d, a0: q.a, layer: l ? l.id : null, s0: l ? l.s : 0, r0: l ? l.r : 0, z0: st.zoom };
+      return;
+    }
+    const sel = layerById(st.sel);
+    if (sel) {
+      const h = hitHandle(sel, p);
+      if (h === 'del') { removeLayer(sel.id); gesture = null; return; }
+      if (h === 'xf') { gesture = { type: 'xf', id: sel.id, d0: Math.hypot(p.x - sel.x, p.y - sel.y) || 1, a0: Math.atan2(p.y - sel.y, p.x - sel.x), s0: sel.s, r0: sel.r }; return; }
+    }
+    const hit = hitLayer(p);
+    if (hit) { select(hit.id); gesture = { type: 'drag', id: hit.id, dx: hit.x - p.x, dy: hit.y - p.y }; }
+    else { select(null); gesture = { type: 'pan', x: p.x, y: p.y, px: st.panX, py: st.panY }; }
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!ptrs.has(e.pointerId)) return;
+    const p = toCanvas(e); ptrs.set(e.pointerId, p);
+    if (!gesture) return;
+    if (gesture.type === 'pinch' && ptrs.size >= 2) {
+      const q = pair(), l = layerById(gesture.layer);
+      if (l) { l.s = clamp(gesture.s0 * q.d / gesture.d0, 0.25, 4); l.r = gesture.r0 + (q.a - gesture.a0); renderLayerPanel(true); }
+      else st.zoom = clamp(gesture.z0 * q.d / gesture.d0, zoomMin(), 3);
+    } else if (gesture.type === 'drag') { const l = layerById(gesture.id); if (l) { l.x = p.x + gesture.dx; l.y = p.y + gesture.dy; } }
+    else if (gesture.type === 'xf') {
+      const l = layerById(gesture.id); if (!l) return;
+      l.s = clamp(gesture.s0 * (Math.hypot(p.x - l.x, p.y - l.y) / gesture.d0), 0.25, 4);
+      l.r = gesture.r0 + (Math.atan2(p.y - l.y, p.x - l.x) - gesture.a0); renderLayerPanel(true);
+    } else if (gesture.type === 'pan') { st.panX = gesture.px + (p.x - gesture.x); st.panY = gesture.py + (p.y - gesture.y); }
+    touch(); redraw();
+  });
+  const endPtr = (e) => {
+    ptrs.delete(e.pointerId);
+    if (ptrs.size < 2 && gesture && gesture.type === 'pinch') gesture = null;
+    if (ptrs.size === 0) gesture = null;
+  };
+  cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
+
+
+  /* ---------- 6. panels (the controls under the preview) ---------- */
+  const chip = (attr, val, label, on) => `<button type="button" class="chip${on ? ' on' : ''}" ${attr}="${val}">${label}</button>`;
+  const swatch = (attr, c, on) => `<button type="button" class="sw${on ? ' on' : ''}" ${attr}="${c}" style="background:${c}" aria-label="Colour ${c}"></button>`;
+
+  function renderLayerPanel(light) {
+    const box = $('#stkLayerPanel'), l = layerById(st.sel);
+    if (!l) { box.hidden = true; box.innerHTML = ''; return; }
+    if (light && !box.hidden) {                     // while resizing by touch, only move the sliders
+      const s = $('#lySize'), r = $('#lyRot'); if (s) s.value = l.s; if (r) r.value = Math.round(l.r * 180 / Math.PI); return;
+    }
+    box.hidden = false;
+    let h = '';
+    if (l.type === 'text') {
+      h += `<div class="field"><input id="lyText" maxlength="28" value="${esc(l.text)}" aria-label="Text"></div>
+            <div class="chips">${TEXT_STYLES.map((t) => chip('data-font', t[0], t[1], l.font === t[0])).join('')}</div>
+            <div class="swatches">${SWATCH.map((c) => swatch('data-lycolor', c, l.color === c)).join('')}</div>`;
+    } else if (l.type === 'deco') {
+      h += `<div class="swatches">${['#ffd43b', '#ffffff', '#ff6b9d', '#ff8c42', '#37b24d', '#1c7ed6', '#7048e8', '#a47148', '#222222'].map((c) => swatch('data-lycolor', c, l.color === c)).join('')}</div>`;
+    }
+    h += `<div class="row2"><label>Size <input id="lySize" type="range" min="0.25" max="4" step="0.01" value="${l.s}"></label>
+          <label>Rotate <input id="lyRot" type="range" min="-180" max="180" step="1" value="${Math.round(l.r * 180 / Math.PI)}"></label></div>
+          <div class="row3"><button type="button" class="btn btn-sm" data-ly="dup">Duplicate</button><button type="button" class="btn btn-sm" data-ly="front">To front</button><button type="button" class="btn btn-sm btn-danger" data-ly="del">Delete</button></div>`;
+    box.innerHTML = h;
+  }
+
+  const sizeOut = (id, v) => { const o = $(id); if (o) o.textContent = v; };
+  function panelHTML() {
+    const t = st.tab;
+    if (t === 'photo') {
+      let h = `<div class="field"><span class="lbl">Frame</span><div class="chips">${SHAPES.map((s) => chip('data-shape', s[0], s[1], st.shape === s[0])).join('')}</div></div>`;
+      h += `<div class="field"><span class="lbl">Border colour</span><div class="swatches">${BORDERS.map((c) => swatch('data-border', c, st.border === c)).join('')}</div></div>
+            <div class="field"><label for="stkBorderW">Border width <output id="oBorderW">${st.borderW}</output></label><input id="stkBorderW" type="range" min="0" max="40" value="${st.borderW}"></div>
+            <div class="field"><label class="chk"><input id="stkEdge2" type="checkbox" ${st.edge2 ? 'checked' : ''}> Extra outer line</label>
+              ${st.edge2 ? `<div class="swatches">${['#ff7eb6', '#ffd43b', '#74c0fc', '#69db7c', '#b197fc', '#ff8787'].map((c) => swatch('data-edge2', c, st.edge2Color === c)).join('')}</div>` : ''}</div>
+            <div class="field"><label for="stkZoom">Photo zoom <output id="oZoom">${Math.round(st.zoom * 100)}%</output></label><input id="stkZoom" type="range" min="100" max="300" value="${Math.round(st.zoom * 100)}"></div>
+            <p class="hint">Tip: drag the photo to re-position it.</p>`;
+      return h;
+    }
+    if (t === 'text') {
+      return `<p class="hint">Tap a style to add text, then type your own and drag it where you want. Add as many as you like.</p>
+              <div class="grid-add">${TEXT_STYLES.map((s) => `<button type="button" class="add-btn" data-addtext="${s[0]}"><b>${esc(s[2])}</b><small>${s[1]}</small></button>`).join('')}</div>`;
+    }
+    if (t === 'decor') {
+      return `<span class="lbl">Emoji</span><div class="emoji-grid">${EMOJIS.map((e) => `<button type="button" data-addemoji="${e}">${e}</button>`).join('')}</div>
+              <span class="lbl" style="margin-top:12px">Decorations</span><div class="grid-add">${DECOS.map((d) => `<button type="button" class="add-btn" data-adddeco="${d[0]}"><canvas width="64" height="64" data-deco="${d[0]}" data-color="${d[2]}"></canvas><small>${d[1]}</small></button>`).join('')}</div>`;
+    }
+    return '';
+  }
+  function renderPanel() {
+    $('#stkPanel').innerHTML = panelHTML();
+    $$('#stkPanel canvas[data-deco]').forEach((c) => { const x = c.getContext('2d'); x.translate(32, 32); drawDeco(x, c.dataset.deco, c.dataset.color, 40); });
+    $$('.stk-tab').forEach((b) => b.classList.toggle('on', b.dataset.stkTab === st.tab));
+  }
+  function setTab(t) {
+    st.tab = t;
+    st.tool = 'move';
+    renderPanel(); redraw();
+  }
+  function syncFoot() {
+    const b = $('#stkSave'); if (!b) return;
+    b.textContent = st.savedClean ? 'Saved ✓' : 'Save to timeline';
+    b.disabled = st.savedClean || st.busy || !st.bmp;
+  }
+
+  const panel = $('#stkPanel');
+  const sheet = $('#sheet-sticker');
+  sheet.addEventListener('click', (e) => {
+    const t = e.target.closest('button, [data-stk-tab]'); if (!t) return;
+    const d = t.dataset;
+    if (d.stkTab) { setTab(d.stkTab); return; }
+    if (d.shape) { st.shape = d.shape; touch(); renderPanel(); redraw(); return; }
+    if (d.border) { st.border = d.border; touch(); renderPanel(); redraw(); return; }
+    if (d.edge2) { st.edge2Color = d.edge2; touch(); renderPanel(); redraw(); return; }
+    if (d.addemoji) { addLayer({ type: 'emoji', ch: d.addemoji }); return; }
+    if (d.adddeco) { const de = DECOS.find((x) => x[0] === d.adddeco); addLayer({ type: 'deco', kind: de[0], color: de[2] }); return; }
+    if (d.addtext) { const s = TEXT_STYLES.find((x) => x[0] === d.addtext); addLayer({ type: 'text', font: s[0], text: s[2], color: s[3], s: s[0] === 'meme' ? 0.75 : 1 }); setTimeout(() => { const i = $('#lyText'); if (i) { i.focus(); i.select(); } }, 30); return; }
+    const l = layerById(st.sel);
+    if (d.font && l) { l.font = d.font; touch(); renderLayerPanel(); redraw(); return; }
+    if (d.lycolor && l) { l.color = d.lycolor; touch(); renderLayerPanel(); redraw(); return; }
+    if (d.ly && l) {
+      if (d.ly === 'del') removeLayer(l.id);
+      else if (d.ly === 'front') { st.layers = st.layers.filter((x) => x !== l).concat(l); touch(); redraw(); toast('Moved to front'); }
+      else if (d.ly === 'dup') { addLayer(Object.assign({}, l, { id: undefined, x: l.x + 26, y: l.y + 26 })); }
+      return;
+    }
+  });
+  sheet.addEventListener('input', (e) => {
+    const id = e.target.id, l = layerById(st.sel);
+    if (id === 'lyText' && l) { l.text = e.target.value; touch(); redraw(); }
+    else if (id === 'lySize' && l) { l.s = +e.target.value; touch(); redraw(); }
+    else if (id === 'lyRot' && l) { l.r = +e.target.value * Math.PI / 180; touch(); redraw(); }
+    else if (id === 'stkBorderW') { st.borderW = +e.target.value; sizeOut('#oBorderW', st.borderW); touch(); redraw(); }
+    else if (id === 'stkZoom') { st.zoom = e.target.value / 100; sizeOut('#oZoom', e.target.value + '%'); touch(); redraw(); }
+  });
+  sheet.addEventListener('change', (e) => {
+    if (e.target.id === 'stkEdge2') { st.edge2 = e.target.checked; touch(); renderPanel(); redraw(); }
+  });
+
+
+
+  /* ---------- 7. open, reset, save, share ---------- */
+  function resetState() {
+    Object.assign(st, { shape: 'circle', border: '#ffffff', borderW: 18, edge2: false, edge2Color: '#ff7eb6', zoom: 1, panX: 0, panY: 0, layers: [], sel: null, nextId: 1, tab: 'photo', tool: 'move', dirty: false, savedClean: false, busy: false, w: SQ, h: SQ });
+    cv.width = st.w; cv.height = st.h; cv.style.setProperty('--ar', st.w / st.h);
+  }
+  async function open(rec) {
+    try {
+      if (st.bmp && st.bmp.close) st.bmp.close();
+      st.bmp = await blobToBitmap(rec.blob);
+    } catch (e) { toast('Could not open that photo: ' + e.message, 'err'); return; }
+    st.rec = rec;
+    resetState(); renderPanel(); renderLayerPanel(); syncFoot();
+    openSheet('sheet-sticker');
+    requestAnimationFrame(redrawNow);
+  }
+  function reset() {
+    if (st.dirty && !confirm('Start over? This clears everything you added to the sticker.')) return;
+    resetState(); renderPanel(); renderLayerPanel(); syncFoot(); redrawNow(); toast('Sticker reset');
+  }
+  function canClose() { return !st.dirty || st.savedClean || confirm('Close without saving this sticker?'); }
+  function exportCanvas() {
+    const c = document.createElement('canvas'); c.width = st.w; c.height = st.h;
+    render(c.getContext('2d'), false); return c;
+  }
+  async function save() {
+    if (st.busy || st.savedClean || !st.bmp) return;     // repeated clicks do nothing
+    st.busy = true; syncFoot();
+    try {
+      const c = exportCanvas();
+      const blob = await toBlob(c, 'image/png');
+      const rec = { id: uid(), ts: Date.now(), kind: 'sticker', blob, thumb: await toBlob(drawScaled(c, 320), 'image/png'), hash: '0000000000000000', sharp: 0, tags: [], pinCover: false, demo: false, srcId: st.rec && st.rec.id };
+      await dbPut(rec); state.photos.push(rec); markChanged();
+      st.savedClean = true;
+      toast('Sticker saved to your timeline ✓');
+    } catch (e) { toast('Could not save the sticker: ' + (e.message || e), 'err', 3500); }
+    finally { st.busy = false; syncFoot(); }
+  }
+  async function share() {
+    if (st.busy || !st.bmp) return;
+    st.busy = true;
+    try {
+      const blob = await toBlob(exportCanvas(), 'image/png');
+      shareToast(await shareBlob(blob, `pawtime-sticker-${Date.now()}.png`));
+    } catch (e) { toast('Could not share: ' + (e.message || e), 'err', 3500); }
+    finally { st.busy = false; syncFoot(); }
+  }
+
+  window.addEventListener('keydown', (e) => {         // Escape must not throw away unsaved work without asking
+    if (e.key === 'Escape' && !sheet.hidden && !canClose()) e.stopImmediatePropagation();
+  }, true);
+  $('#stkClose').addEventListener('click', () => { if (canClose()) { closeSheet('sheet-sticker'); renderTimeline(); } });
+  $('#stkReset').addEventListener('click', reset);
+  $('#stkSave').addEventListener('click', save);
+  $('#stkShare').addEventListener('click', share);
+
+  return { open, canClose, redrawNow, _st: st, _exportCanvas: exportCanvas,
+    _render: render };
+})();
