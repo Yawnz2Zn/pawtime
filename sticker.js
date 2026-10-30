@@ -12,6 +12,7 @@ const Sticker = (() => {
   const cv = $('#stkCanvas');
   const g = cv.getContext('2d');
   const SQ = 512;                                   // a sticker is 512 x 512 px, the usual chat-sticker size
+  const CARD_W = 480, CARD_H = 640;                 // a "card" is a patterned 3:4 poster
 
   /* ---------- 1. state ---------- */
   const SHAPES = [['circle', 'Circle'], ['oval', 'Oval'], ['rounded', 'Rounded'], ['heart', 'Heart'], ['star', 'Star'], ['burst', 'Burst'], ['badge', 'Badge']];
@@ -32,6 +33,8 @@ const Sticker = (() => {
     zoom: 1, panX: 0, panY: 0,
     layers: [], sel: null, nextId: 1,
     tab: 'photo', tool: 'move', dirty: false, savedClean: false, busy: false
+    , layout: 'sticker', bg: { pattern: 'dots', c1: '#ff8fb8', c2: '#fff0f6' },
+    strokes: [], pen: { kind: 'pen', color: '#ff3d81', w: 8 }
   };
   const zoomMin = () => (st.cutOn ? 0.4 : 1);       // a cut-out may be shrunk, a photo inside a frame may not
   let raf = 0;
@@ -177,7 +180,59 @@ const Sticker = (() => {
   function select(id) { if (st.sel !== id) { st.sel = id; renderLayerPanel(); } redraw(); }
 
   /* ---------- 4. drawing the whole sticker ---------- */
+  function drawCard(x, W, H) {
+    const { pattern: p, c1, c2 } = st.bg;
+    x.save();
+    x.beginPath(); x.moveTo(40, 0); x.arcTo(W, 0, W, H, 40); x.arcTo(W, H, 0, H, 40); x.arcTo(0, H, 0, 0, 40); x.arcTo(0, 0, W, 0, 40); x.closePath(); x.clip();
+    x.fillStyle = c1; x.fillRect(0, 0, W, H);
+    if (p === 'gradient') {
+      const gr = x.createLinearGradient(0, 0, W, H); gr.addColorStop(0, c1); gr.addColorStop(1, c2); x.fillStyle = gr; x.fillRect(0, 0, W, H);
+      x.fillStyle = 'rgba(255,255,255,.35)'; for (let i = 0; i < 40; i++) { x.beginPath(); x.arc((i * 97) % W, (i * 61) % H, 5 + (i % 4) * 3, 0, Math.PI * 2); x.fill(); }
+    } else if (p === 'dots') {                      // halftone dots that grow towards the bottom
+      x.fillStyle = c2;
+      for (let row = 0, y = 12; y < H + 12; row++, y += 22) for (let xx = row % 2 ? 11 : 0; xx < W + 22; xx += 22) { x.beginPath(); x.arc(xx, y, 2.5 + 5 * (y / H), 0, Math.PI * 2); x.fill(); }
+    } else if (p === 'gingham') {
+      x.fillStyle = c2; x.fillRect(0, 0, W, H);
+      x.fillStyle = c1; x.globalAlpha = 0.55;
+      for (let i = 0; i < W; i += 80) x.fillRect(i, 0, 40, H);
+      for (let j = 0; j < H; j += 80) x.fillRect(0, j, W, 40);
+      x.globalAlpha = 1;
+    } else if (p === 'plaid') {
+      x.fillStyle = c2; x.globalAlpha = 0.5;
+      for (let i = 20; i < W; i += 96) { x.fillRect(i, 0, 38, H); } for (let j = 20; j < H; j += 96) { x.fillRect(0, j, W, 38); }
+      x.globalAlpha = 0.9; x.fillStyle = '#fff'; for (let i = 62; i < W; i += 96) x.fillRect(i, 0, 4, H); for (let j = 62; j < H; j += 96) x.fillRect(0, j, W, 4);
+      x.globalAlpha = 1;
+    } else if (p === 'rays') {
+      const cx = W / 2, cy = H * 0.46, n = 28;
+      for (let i = 0; i < n; i += 2) { x.beginPath(); x.moveTo(cx, cy); x.arc(cx, cy, Math.hypot(W, H), i * 2 * Math.PI / n, (i + 1) * 2 * Math.PI / n); x.closePath(); x.fillStyle = c2; x.fill(); }
+    } else if (p === 'stripes') {
+      x.save(); x.translate(W / 2, H / 2); x.rotate(-Math.PI / 6); x.fillStyle = c2;
+      for (let i = -900; i < 900; i += 64) x.fillRect(i, -900, 32, 1800);
+      x.restore();
+    } else if (p === 'stars') {
+      x.fillStyle = c2;
+      for (let row = 0, y = 30; y < H + 30; row++, y += 70) for (let xx = row % 2 ? 35 : 0; xx < W + 70; xx += 70) { x.beginPath(); roundedPoly(x, starPts(xx, y, 15, 7, 5, -Math.PI / 2), 2); x.fill(); }
+    }
+    x.restore();
+    // soft white frame inside the edge, like a printed sticker card
+    x.save(); x.lineWidth = 7; x.strokeStyle = 'rgba(255,255,255,.95)';
+    x.beginPath(); x.moveTo(52, 12); x.arcTo(W - 12, 12, W - 12, H - 12, 34); x.arcTo(W - 12, H - 12, 12, H - 12, 34); x.arcTo(12, H - 12, 12, 12, 34); x.arcTo(12, 12, W - 12, 12, 34); x.closePath(); x.stroke(); x.restore();
+  }
+  function drawStrokes(x) {
+    for (const s of st.strokes) {
+      const p = s.pts; if (p.length < 2) continue;
+      x.save(); x.lineCap = 'round'; x.lineJoin = 'round'; x.strokeStyle = s.color;
+      const path = () => { x.beginPath(); x.moveTo(p[0], p[1]); if (p.length === 2) x.lineTo(p[0] + 0.01, p[1]); for (let i = 2; i + 1 < p.length; i += 2) x.quadraticCurveTo(p[i - 2], p[i - 1], (p[i - 2] + p[i]) / 2, (p[i - 1] + p[i + 1]) / 2); x.lineTo(p[p.length - 2], p[p.length - 1]); };
+      if (s.kind === 'marker') { x.globalAlpha = 0.5; x.lineWidth = s.w * 2.4; path(); x.stroke(); }
+      else if (s.kind === 'neon') {
+        x.shadowColor = s.color; x.shadowBlur = s.w * 2.4; x.lineWidth = s.w * 1.2; path(); x.stroke(); x.stroke();
+        x.shadowBlur = 0; x.strokeStyle = '#ffffff'; x.lineWidth = s.w * 0.42; path(); x.stroke();
+      } else { x.lineWidth = s.w; path(); x.stroke(); }
+      x.restore();
+    }
+  }
   function baseArea(W, H) {
+    if (st.layout === 'card') return { cx: W / 2, cy: H * 0.46, size: W * 0.74 };
     const m = st.borderW + (st.edge2 ? 9 : 0) + 26;
     return { cx: W / 2, cy: H / 2, size: Math.min(W, H) - 2 * m };
   }
@@ -220,7 +275,9 @@ const Sticker = (() => {
     const W = st.w, H = st.h;
     x.clearRect(0, 0, W, H);
     if (!st.bmp) return;
+    if (st.layout === 'card') drawCard(x, W, H);
     drawFrame(x, W, H);
+    drawStrokes(x);
     for (const l of st.layers) drawLayer(x, l);
     if (ui && st.tool === 'move') { const l = layerById(st.sel); if (l) drawSelection(x, l); }
   }
@@ -252,6 +309,7 @@ const Sticker = (() => {
     if (!st.bmp) return;
     cv.setPointerCapture(e.pointerId);
     const p = toCanvas(e); ptrs.set(e.pointerId, p);
+    if (st.tool === 'draw') { if (ptrs.size === 1) beginStroke(p); return; }
     if (ptrs.size === 2) {                          // two fingers: pinch to resize and rotate the selected layer, or zoom the photo
       const q = pair(), l = layerById(st.sel);
       gesture = { type: 'pinch', d0: q.d, a0: q.a, layer: l ? l.id : null, s0: l ? l.s : 0, r0: l ? l.r : 0, z0: st.zoom };
@@ -270,6 +328,7 @@ const Sticker = (() => {
   cv.addEventListener('pointermove', (e) => {
     if (!ptrs.has(e.pointerId)) return;
     const p = toCanvas(e); ptrs.set(e.pointerId, p);
+    if (st.tool === 'draw') { if (ptrs.size === 1) extendStroke(p); return; }
     if (!gesture) return;
     if (gesture.type === 'pinch' && ptrs.size >= 2) {
       const q = pair(), l = layerById(gesture.layer);
@@ -285,11 +344,29 @@ const Sticker = (() => {
   });
   const endPtr = (e) => {
     ptrs.delete(e.pointerId);
+    if (st.tool === 'draw') { endStroke(); return; }
     if (ptrs.size < 2 && gesture && gesture.type === 'pinch') gesture = null;
     if (ptrs.size === 0) gesture = null;
   };
   cv.addEventListener('pointerup', endPtr); cv.addEventListener('pointercancel', endPtr);
 
+  let cur = null;                                   // the stroke being drawn
+  function beginStroke(p) {
+    if (st.pen.kind === 'eraser') { gesture = { type: 'erase' }; eraseAt(p); return; }
+    cur = { kind: st.pen.kind, color: st.pen.color, w: st.pen.w, pts: [p.x, p.y] }; st.strokes.push(cur); touch(); redraw();
+  }
+  function extendStroke(p) {
+    if (gesture && gesture.type === 'erase') { eraseAt(p); return; }
+    if (!cur) return;
+    const n = cur.pts.length;
+    if (Math.hypot(p.x - cur.pts[n - 2], p.y - cur.pts[n - 1]) > 2.5) { cur.pts.push(p.x, p.y); redraw(); }
+  }
+  function endStroke() { cur = null; gesture = null; syncDrawButtons(); }
+  function eraseAt(p) {
+    const r = 18 * cssScale() / 1.0, before = st.strokes.length;
+    st.strokes = st.strokes.filter((s) => { for (let i = 0; i + 1 < s.pts.length; i += 2) if (Math.hypot(s.pts[i] - p.x, s.pts[i + 1] - p.y) < r + s.w) return false; return true; });
+    if (st.strokes.length !== before) { touch(); redraw(); }
+  }
 
   /* ---------- 6. panels (the controls under the preview) ---------- */
   const chip = (attr, val, label, on) => `<button type="button" class="chip${on ? ' on' : ''}" ${attr}="${val}">${label}</button>`;
@@ -337,6 +414,22 @@ const Sticker = (() => {
       return `<span class="lbl">Emoji</span><div class="emoji-grid">${EMOJIS.map((e) => `<button type="button" data-addemoji="${e}">${e}</button>`).join('')}</div>
               <span class="lbl" style="margin-top:12px">Decorations</span><div class="grid-add">${DECOS.map((d) => `<button type="button" class="add-btn" data-adddeco="${d[0]}"><canvas width="64" height="64" data-deco="${d[0]}" data-color="${d[2]}"></canvas><small>${d[1]}</small></button>`).join('')}</div>`;
     }
+    if (t === 'draw') {
+      const kinds = [['pen', 'Pen'], ['marker', 'Marker'], ['neon', 'Neon'], ['eraser', 'Eraser']];
+      return `<div class="chips">${kinds.map((k) => chip('data-pen', k[0], k[1], st.pen.kind === k[0])).join('')}</div>
+              <div class="swatches" style="margin-top:10px">${SWATCH.concat(['#74c0fc', '#69db7c']).map((c) => swatch('data-pencolor', c, st.pen.color === c)).join('')}</div>
+              <div class="field"><label for="stkPenW">Thickness <output id="oPenW">${st.pen.w}</output></label><input id="stkPenW" type="range" min="2" max="30" value="${st.pen.w}"></div>
+              <div class="row3"><button type="button" class="btn btn-sm" data-stroke="undo" ${st.strokes.length ? '' : 'disabled'}>Undo line</button><button type="button" class="btn btn-sm btn-danger" data-stroke="clear" ${st.strokes.length ? '' : 'disabled'}>Clear all lines</button></div>
+              <p class="hint">Draw with your finger. Neon makes glowing lines. Eraser removes a whole line when you touch it.</p>`;
+    }
+    if (t === 'card') {
+      const pats = [['dots', 'Halftone'], ['gingham', 'Gingham'], ['plaid', 'Plaid'], ['rays', 'Sun rays'], ['stripes', 'Stripes'], ['stars', 'Stars'], ['gradient', 'Gradient'], ['solid', 'Solid']];
+      const pairs = [['#ff8fb8', '#fff0f6'], ['#ffe45e', '#ff9ecb'], ['#6fa8ff', '#e6f0ff'], ['#b6f04a', '#fff59d'], ['#e63946', '#ffffff'], ['#a78bfa', '#ffd6f0'], ['#7fe5c3', '#fff7c2'], ['#ffb347', '#fff3d6']];
+      return `<div class="chips">${chip('data-layout', 'sticker', 'Sticker (see-through)', st.layout === 'sticker')}${chip('data-layout', 'card', 'Card (pattern background)', st.layout === 'card')}</div>
+              ${st.layout === 'card' ? `<div class="field"><span class="lbl">Pattern</span><div class="chips">${pats.map((p) => chip('data-pattern', p[0], p[1], st.bg.pattern === p[0])).join('')}</div></div>
+              <div class="field"><span class="lbl">Colours</span><div class="swatches">${pairs.map((pr) => `<button type="button" class="sw two${st.bg.c1 === pr[0] && st.bg.c2 === pr[1] ? ' on' : ''}" data-pair="${pr[0]},${pr[1]}" style="background:linear-gradient(135deg,${pr[0]} 50%,${pr[1]} 50%)" aria-label="Colours ${pr[0]} and ${pr[1]}"></button>`).join('')}</div></div>`
+                : '<p class="hint">A card gives your sticker a printed look: choose a pattern and colours. Switch back to Sticker for a see-through background.</p>'}`;
+    }
     return '';
   }
   function renderPanel() {
@@ -347,12 +440,24 @@ const Sticker = (() => {
   function setTab(t) {
     st.tab = t;
     st.tool = 'move';
+    st.tool = t === 'draw' ? 'draw' : 'move';
+    cv.style.cursor = st.tool === 'draw' ? 'crosshair' : 'grab';
     renderPanel(); redraw();
   }
   function syncFoot() {
     const b = $('#stkSave'); if (!b) return;
     b.textContent = st.savedClean ? 'Saved ✓' : 'Save to timeline';
     b.disabled = st.savedClean || st.busy || !st.bmp;
+  }
+  function syncDrawButtons() { if (st.tab === 'draw') renderPanel(); }
+  function setLayout(next) {
+    if (next === st.layout) return;
+    const W0 = st.w, H0 = st.h;
+    st.layout = next; st.w = next === 'card' ? CARD_W : SQ; st.h = next === 'card' ? CARD_H : SQ;
+    cv.width = st.w; cv.height = st.h; cv.style.setProperty('--ar', st.w / st.h);
+    for (const l of st.layers) { l.x *= st.w / W0; l.y *= st.h / H0; }
+    for (const s of st.strokes) for (let i = 0; i < s.pts.length; i += 2) { s.pts[i] *= st.w / W0; s.pts[i + 1] *= st.h / H0; }
+    touch();
   }
 
   const panel = $('#stkPanel');
@@ -376,6 +481,13 @@ const Sticker = (() => {
       else if (d.ly === 'dup') { addLayer(Object.assign({}, l, { id: undefined, x: l.x + 26, y: l.y + 26 })); }
       return;
     }
+    if (d.pen) { st.pen.kind = d.pen; renderPanel(); return; }
+    if (d.pencolor) { st.pen.color = d.pencolor; if (st.pen.kind === 'eraser') st.pen.kind = 'pen'; renderPanel(); return; }
+    if (d.stroke === 'undo') { st.strokes.pop(); touch(); renderPanel(); redraw(); return; }
+    if (d.stroke === 'clear') { st.strokes = []; touch(); renderPanel(); redraw(); return; }
+    if (d.layout) { setLayout(d.layout); renderPanel(); redraw(); return; }
+    if (d.pattern) { st.bg.pattern = d.pattern; touch(); renderPanel(); redraw(); return; }
+    if (d.pair) { const [a, b] = d.pair.split(','); st.bg.c1 = a; st.bg.c2 = b; touch(); renderPanel(); redraw(); return; }
   });
   sheet.addEventListener('input', (e) => {
     const id = e.target.id, l = layerById(st.sel);
@@ -384,6 +496,7 @@ const Sticker = (() => {
     else if (id === 'lyRot' && l) { l.r = +e.target.value * Math.PI / 180; touch(); redraw(); }
     else if (id === 'stkBorderW') { st.borderW = +e.target.value; sizeOut('#oBorderW', st.borderW); touch(); redraw(); }
     else if (id === 'stkZoom') { st.zoom = e.target.value / 100; sizeOut('#oZoom', e.target.value + '%'); touch(); redraw(); }
+    else if (id === 'stkPenW') { st.pen.w = +e.target.value; sizeOut('#oPenW', st.pen.w); }
   });
   sheet.addEventListener('change', (e) => {
     if (e.target.id === 'stkEdge2') { st.edge2 = e.target.checked; touch(); renderPanel(); redraw(); }
@@ -394,6 +507,8 @@ const Sticker = (() => {
   /* ---------- 7. open, reset, save, share ---------- */
   function resetState() {
     Object.assign(st, { shape: 'circle', border: '#ffffff', borderW: 18, edge2: false, edge2Color: '#ff7eb6', zoom: 1, panX: 0, panY: 0, layers: [], sel: null, nextId: 1, tab: 'photo', tool: 'move', dirty: false, savedClean: false, busy: false, w: SQ, h: SQ });
+    Object.assign(st, { layout: 'sticker', bg: { pattern: 'dots', c1: '#ff8fb8', c2: '#fff0f6' }, strokes: [], pen: { kind: 'pen', color: '#ff3d81', w: 8 } });
+    cv.style.cursor = 'grab';
     cv.width = st.w; cv.height = st.h; cv.style.setProperty('--ar', st.w / st.h);
   }
   async function open(rec) {
