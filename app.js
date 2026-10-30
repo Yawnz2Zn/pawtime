@@ -352,6 +352,22 @@ async function shoot() {
 }
 function afterSave(batch) {
   toast(batch.length > 1 ? `Saved ${batch.length} photos ✓` : 'Saved ✓', '', 1500);
+  showQuickTags();
+}
+function showQuickTags() {
+  const box = $('#quickTagButtons');
+  box.innerHTML = TAGS.map((t) => `<button type="button" data-tag="${t.id}">${t.emoji} ${t.label}</button>`).join('');
+  $('#quickTags').hidden = false;
+  clearTimeout(quickTagTimer);
+  quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 6000);
+}
+async function toggleTagOn(items, tagId) {
+  const allHave = items.every((p) => p.tags.includes(tagId));
+  for (const p of items) {
+    p.tags = allHave ? p.tags.filter((t) => t !== tagId) : [...new Set([...p.tags, tagId])];
+    await dbPut(p);
+  }
+  markChanged();
 }
 function updateChrome() {
   const photos = state.photos.filter((p) => p.kind === 'photo');
@@ -426,6 +442,7 @@ function renderTimeline() {
       `<small>${age ? esc(age) + ' · ' : ''}Tap a stack to open it. Nothing is ever deleted automatically.</small>`;
   }
 
+  renderFilterChips(all);
 
   const list = state.filterTag ? all.filter((m) => m.tags.has(state.filterTag)) : all;
   const host = $('#timeline');
@@ -488,6 +505,14 @@ function momentCard(m) {
     ${tags.replace('⭐', '') ? `<span class="badge tags">${tags.replace('⭐', '')}</span>` : ''}
     ${m.sticker ? '<span class="badge stk">sticker</span>' : ''}</button>`;
 }
+function renderFilterChips(all) {
+  if (!state.photos.length) { $('#filterChips').innerHTML = ''; return; }
+  const counts = {};
+  all.forEach((m) => m.tags.forEach((t) => { counts[t] = (counts[t] || 0) + 1; }));
+  $('#filterChips').innerHTML =
+    `<button class="chip${state.filterTag ? '' : ' on'}" data-filter="">All</button>` +
+    TAGS.map((t) => `<button class="chip${state.filterTag === t.id ? ' on' : ''}" data-filter="${t.id}">${t.emoji} ${t.label}${counts[t.id] ? ' · ' + counts[t.id] : ''}</button>`).join('');
+}
 /* ---------- 7. moment viewer ---------- */
 const viewer = { photoId: null };
 function openViewer(photoId) { viewer.photoId = photoId; openSheet('sheet-viewer'); renderViewer(); }
@@ -509,6 +534,8 @@ function renderViewer() {
   $('#vInfo').textContent = `${fmtDay(cur.ts)} · ${fmtTime(cur.ts)}${age ? ' · ' + age : ''}` +
     (m.items.length > 1 ? (m.coverIsPinned ? ' · Cover: your pick' : ' · Cover: auto-picked as the sharpest shot') : '');
 
+  if (cur.kind === 'sticker') { $('#vTags').innerHTML = '<span class="muted small">Stickers are not tagged.</span>'; }
+  else $('#vTags').innerHTML = TAGS.map((t) => `<button class="chip${m.items.every((p) => p.tags.includes(t.id)) ? ' on' : ''}" data-vtag="${t.id}">${t.emoji} ${t.label}</button>`).join('');
 
   const acts = [];
   if (m.items.length > 1 && cur.id !== m.cover.id) acts.push(`<button class="btn" data-act="cover">⭐ Use this photo as the cover</button>`);
@@ -672,10 +699,25 @@ function wire() {
   $('#btnRetry').addEventListener('click', startCamera);
   $('#btnDemo').addEventListener('click', loadDemo);
   $('#fileInput').addEventListener('change', (e) => { importFiles(e.target.files); e.target.value = ''; });
+  $('#quickTagButtons').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-tag]'); if (!b || !lastBatch.length) return;
+    await toggleTagOn(lastBatch, b.dataset.tag);
+    b.classList.toggle('on', lastBatch.every((p) => p.tags.includes(b.dataset.tag)));
+    clearTimeout(quickTagTimer); quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 4000);
+  });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
+  $('#filterChips').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-filter]'); if (!b) return;
+    state.filterTag = b.dataset.filter || null; renderTimeline();
+  });
 
   $$('[data-close]').forEach((b) => b.addEventListener('click', () => { closeSheet(b.dataset.close); if (b.dataset.close === 'sheet-viewer' || b.dataset.close === 'sheet-sticker') renderTimeline(); }));
   $('#vStrip').addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { viewer.photoId = b.dataset.pick; renderViewer(); } });
+  $('#vTags').addEventListener('click', async (e) => {
+    const b = e.target.closest('[data-vtag]'); if (!b) return;
+    const m = momentOf(viewer.photoId); if (!m) return;
+    await toggleTagOn(m.items, b.dataset.vtag); renderViewer();
+  });
   $('#vActions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) viewerAction(b.dataset.act); });
 
   $('#obStart').addEventListener('click', async () => {

@@ -44,6 +44,10 @@
           </div>
         </div>
 
+        <div id="quickTags" class="quick-tags" hidden>
+          <span class="qt-label">Tag this moment</span>
+          <div id="quickTagButtons" class="qt-buttons"></div>
+        </div>
       </div>
 
       <div class="cam-controls">
@@ -64,6 +68,7 @@
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-head">
           <div id="statLine" class="stat-line"></div>
+          <div id="filterChips" class="chips" role="group" aria-label="Filter by tag"></div>
         </div>
         <div id="timeline"></div>
         <div id="emptyState" class="empty" hidden></div>
@@ -102,6 +107,10 @@
       <div id="vStage" class="v-stage"></div>
       <div id="vStrip" class="v-strip"></div>
       <p id="vInfo" class="muted small"></p>
+      <div class="field">
+        <span class="lbl">Tags for this moment</span>
+        <div id="vTags" class="chips"></div>
+      </div>
       <div id="vActions" class="btn-col"></div>
     </div>
   </div>
