@@ -199,3 +199,6 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .swatches .sw{width:34px;height:34px;border-radius:50%;border:2px solid var(--sand);padding:0}
 .swatches .sw.on{outline:3px solid var(--accent);outline-offset:2px}
 .stk-panel input[type=text],.layer-panel input:not([type]){width:100%}
+.busy-box{background:var(--card);border:1px dashed var(--sand);border-radius:14px;padding:16px;text-align:center}
+.spinner{width:30px;height:30px;margin:0 auto 8px;border-radius:50%;border:4px solid var(--sand2);border-top-color:var(--accent);animation:spin 0.9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}

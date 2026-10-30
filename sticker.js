@@ -276,6 +276,7 @@ const Sticker = (() => {
     x.clearRect(0, 0, W, H);
     if (!st.bmp) return;
     if (st.layout === 'card') drawCard(x, W, H);
+    if (cut.on) drawCut(x, W, H); else
     drawFrame(x, W, H);
     drawStrokes(x);
     for (const l of st.layers) drawLayer(x, l);
@@ -310,6 +311,7 @@ const Sticker = (() => {
     cv.setPointerCapture(e.pointerId);
     const p = toCanvas(e); ptrs.set(e.pointerId, p);
     if (st.tool === 'draw') { if (ptrs.size === 1) beginStroke(p); return; }
+    if (st.tool === 'refine') { if (ptrs.size === 1) refineDown(p); return; }
     if (ptrs.size === 2) {                          // two fingers: pinch to resize and rotate the selected layer, or zoom the photo
       const q = pair(), l = layerById(st.sel);
       gesture = { type: 'pinch', d0: q.d, a0: q.a, layer: l ? l.id : null, s0: l ? l.s : 0, r0: l ? l.r : 0, z0: st.zoom };
@@ -329,6 +331,7 @@ const Sticker = (() => {
     if (!ptrs.has(e.pointerId)) return;
     const p = toCanvas(e); ptrs.set(e.pointerId, p);
     if (st.tool === 'draw') { if (ptrs.size === 1) extendStroke(p); return; }
+    if (st.tool === 'refine') { refineMove(p); return; }
     if (!gesture) return;
     if (gesture.type === 'pinch' && ptrs.size >= 2) {
       const q = pair(), l = layerById(gesture.layer);
@@ -345,6 +348,7 @@ const Sticker = (() => {
   const endPtr = (e) => {
     ptrs.delete(e.pointerId);
     if (st.tool === 'draw') { endStroke(); return; }
+    if (st.tool === 'refine') { refineUp(); return; }
     if (ptrs.size < 2 && gesture && gesture.type === 'pinch') gesture = null;
     if (ptrs.size === 0) gesture = null;
   };
@@ -398,6 +402,8 @@ const Sticker = (() => {
     const t = st.tab;
     if (t === 'photo') {
       let h = `<div class="field"><span class="lbl">Frame</span><div class="chips">${SHAPES.map((s) => chip('data-shape', s[0], s[1], st.shape === s[0])).join('')}</div></div>`;
+      if (cut.on || cut.refine) return cutoutPanelHTML();
+      h = cutoutPanelHTML() + h;
       h += `<div class="field"><span class="lbl">Border colour</span><div class="swatches">${BORDERS.map((c) => swatch('data-border', c, st.border === c)).join('')}</div></div>
             <div class="field"><label for="stkBorderW">Border width <output id="oBorderW">${st.borderW}</output></label><input id="stkBorderW" type="range" min="0" max="40" value="${st.borderW}"></div>
             <div class="field"><label class="chk"><input id="stkEdge2" type="checkbox" ${st.edge2 ? 'checked' : ''}> Extra outer line</label>
@@ -442,6 +448,7 @@ const Sticker = (() => {
     st.tool = 'move';
     st.tool = t === 'draw' ? 'draw' : 'move';
     cv.style.cursor = st.tool === 'draw' ? 'crosshair' : 'grab';
+    if (cut.refine && t !== 'photo') leaveRefine(false);
     renderPanel(); redraw();
   }
   function syncFoot() {
@@ -457,6 +464,7 @@ const Sticker = (() => {
     cv.width = st.w; cv.height = st.h; cv.style.setProperty('--ar', st.w / st.h);
     for (const l of st.layers) { l.x *= st.w / W0; l.y *= st.h / H0; }
     for (const s of st.strokes) for (let i = 0; i < s.pts.length; i += 2) { s.pts[i] *= st.w / W0; s.pts[i + 1] *= st.h / H0; }
+    if (cut.on) rebuildCut();
     touch();
   }
 
@@ -488,6 +496,7 @@ const Sticker = (() => {
     if (d.layout) { setLayout(d.layout); renderPanel(); redraw(); return; }
     if (d.pattern) { st.bg.pattern = d.pattern; touch(); renderPanel(); redraw(); return; }
     if (d.pair) { const [a, b] = d.pair.split(','); st.bg.c1 = a; st.bg.c2 = b; touch(); renderPanel(); redraw(); return; }
+    if (cutoutClick(d)) return;
   });
   sheet.addEventListener('input', (e) => {
     const id = e.target.id, l = layerById(st.sel);
@@ -497,18 +506,259 @@ const Sticker = (() => {
     else if (id === 'stkBorderW') { st.borderW = +e.target.value; sizeOut('#oBorderW', st.borderW); touch(); redraw(); }
     else if (id === 'stkZoom') { st.zoom = e.target.value / 100; sizeOut('#oZoom', e.target.value + '%'); touch(); redraw(); }
     else if (id === 'stkPenW') { st.pen.w = +e.target.value; sizeOut('#oPenW', st.pen.w); }
+    else if (cutoutInput(id, e.target)) { /* handled */ }
   });
   sheet.addEventListener('change', (e) => {
     if (e.target.id === 'stkEdge2') { st.edge2 = e.target.checked; touch(); renderPanel(); redraw(); }
+    else if (e.target.id === 'stkShadow') { cut.shadow = e.target.checked; touch(); redraw(); }
   });
 
 
+  /* ---------- 8. cut-out: find the pet, remove the background, add an outline ---------- */
+  const cut = { on: false, busy: false, refine: false, base: null, mask: null, sub: null, comp: null, bb: null, pad: 0,
+    outline: 'solid', ocolor: '#ffffff', ocolor2: '#ff7eb6', ow: 14, shadow: true, method: '', undo: [], brush: { mode: 'add', size: 24 }, progress: 0 };
+  const cutState = () => cut;
+  const BASE_MAX = 768;                              // working size of the photo while cutting out
+  let enginePromise = null;
+  const loadScript = (src) => new Promise((res, rej) => { const el = document.createElement('script'); el.src = src; el.onload = res; el.onerror = () => rej(new Error('Could not load ' + src)); document.head.appendChild(el); });
+  const fetchOk = (u, kind) => fetch(u).then((r) => { if (!r.ok) throw new Error(u + ': HTTP ' + r.status); return r[kind](); });
+  function loadEngine() {                            // the AI model is only downloaded the first time it is needed
+    if (!enginePromise) {
+      enginePromise = (async () => {
+        if (!window.U2Net) await loadScript('vendor/u2net-engine.js');
+        if (!U2Net.supported()) throw new Error('WebAssembly SIMD is not available in this browser');
+        const [wasmBytes, planJson, weightsBuffer] = await Promise.all([fetchOk('vendor/conv.wasm', 'arrayBuffer'), fetchOk('vendor/u2netp.json', 'text'), fetchOk('vendor/u2netp.bin', 'arrayBuffer')]);
+        return U2Net.create({ wasmBytes, planJson, weightsBuffer });
+      })().catch((e) => { enginePromise = null; throw e; });
+    }
+    return enginePromise;
+  }
+  function resetCutout() {
+    Object.assign(cut, { on: false, busy: false, refine: false, base: null, mask: null, sub: null, comp: null, bb: null, pad: 0, outline: 'solid', ocolor: '#ffffff', ocolor2: '#ff7eb6', ow: 14, shadow: true, method: '', undo: [], brush: { mode: 'add', size: 24 }, progress: 0 });
+    st.cutOn = false;
+  }
+
+  /* turn a 0..1 map into a sharp-edged alpha canvas the size of the working photo */
+  function maskFromMap(map, mw, mh, W, H) {
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < map.length; i++) { const v = map[i]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    const sc = hi > lo ? 1 / (hi - lo) : 1;
+    const small = document.createElement('canvas'); small.width = mw; small.height = mh;
+    const sx = small.getContext('2d'), img = sx.createImageData(mw, mh);
+    for (let i = 0; i < map.length; i++) { img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = 255; img.data[i * 4 + 3] = Math.round(clamp((map[i] - lo) * sc, 0, 1) * 255); }
+    sx.putImageData(img, 0, 0);
+    const m = document.createElement('canvas'); m.width = W; m.height = H;
+    const mx = m.getContext('2d', { willReadFrequently: true }); mx.imageSmoothingQuality = 'high'; mx.drawImage(small, 0, 0, W, H);
+    const d = mx.getImageData(0, 0, W, H), a = d.data;
+    for (let i = 3; i < a.length; i += 4) a[i] = clamp(Math.round((a[i] - 100) * 255 / 70), 0, 255);   // sharpen the soft edge
+    mx.putImageData(d, 0, 0);
+    return m;
+  }
+  async function aiMask(base) {
+    const eng = await loadEngine(), S = 320;
+    const c = document.createElement('canvas'); c.width = S; c.height = S;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.imageSmoothingQuality = 'high'; x.drawImage(base, 0, 0, S, S);
+    const d = x.getImageData(0, 0, S, S).data, { mean, std } = eng.plan;
+    let mx = 1; for (let i = 0; i < d.length; i += 4) mx = Math.max(mx, d[i], d[i + 1], d[i + 2]);
+    const inp = new Float32Array(3 * S * S);
+    for (let i = 0; i < S * S; i++) for (let k = 0; k < 3; k++) inp[k * S * S + i] = (d[i * 4 + k] / mx - mean[k]) / std[k];
+    const map = await eng.run(inp, S, S, { yieldToUI: true, onProgress: (p) => { cut.progress = p; const el = $('#cutProg'); if (el) el.textContent = Math.round(p * 100) + '%'; } });
+    return maskFromMap(map, S, S, base.width, base.height);
+  }
+
+  /* fallback without the AI model: anything unlike the colours along the photo's border is "the pet" */
+  function quickMask(base) {
+    const S = 160, c = drawScaled(base, S), w = c.width, h = c.height;
+    const d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    const border = [];
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (x < 3 || y < 3 || x >= w - 3 || y >= h - 3) { const i = (y * w + x) * 4; border.push([d[i], d[i + 1], d[i + 2]]); }
+    let cent = [border[0], border[border.length >> 1], border[border.length - 1]];     // tiny k-means: backgrounds often have 2-3 colours
+    for (let it = 0; it < 6; it++) {
+      const sum = cent.map(() => [0, 0, 0, 0]);
+      for (const p of border) { let b = 0, bd = 1e9; cent.forEach((q, k) => { const dd = (p[0] - q[0]) ** 2 + (p[1] - q[1]) ** 2 + (p[2] - q[2]) ** 2; if (dd < bd) { bd = dd; b = k; } }); sum[b][0] += p[0]; sum[b][1] += p[1]; sum[b][2] += p[2]; sum[b][3]++; }
+      cent = sum.map((s2, k) => (s2[3] ? [s2[0] / s2[3], s2[1] / s2[3], s2[2] / s2[3]] : cent[k]));
+    }
+    const dist = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) { let b = 1e9; for (const q of cent) { const dd = Math.hypot(d[i * 4] - q[0], d[i * 4 + 1] - q[1], d[i * 4 + 2] - q[2]); if (dd < b) b = dd; } dist[i] = b; }
+    const hist = new Array(64).fill(0); for (const v of dist) hist[Math.min(63, v >> 2)]++;                   // Otsu threshold on the distance
+    let tot = dist.length, sumAll = 0; hist.forEach((n, i) => { sumAll += i * n; });
+    let wB = 0, sB = 0, best = 0, thr = 8;
+    for (let i = 0; i < 64; i++) { wB += hist[i]; if (!wB) continue; const wF = tot - wB; if (!wF) break; sB += i * hist[i]; const mB = sB / wB, mF = (sumAll - sB) / wF, v = wB * wF * (mB - mF) ** 2; if (v > best) { best = v; thr = i; } }
+    thr = clamp(thr * 4 + 4, 28, 90);
+    const bg = new Uint8Array(w * h), q = [];                                                              // flood the background in from the border
+    const push = (i) => { if (!bg[i] && dist[i] < thr) { bg[i] = 1; q.push(i); } };
+    for (let x = 0; x < w; x++) { push(x); push((h - 1) * w + x); } for (let y = 0; y < h; y++) { push(y * w); push(y * w + w - 1); }
+    while (q.length) { const i = q.pop(), x = i % w; if (x > 0) push(i - 1); if (x < w - 1) push(i + 1); if (i >= w) push(i - w); if (i < w * (h - 1)) push(i + w); }
+    const lab = new Int32Array(w * h), sizes = [0]; let n = 0;                                             // keep the biggest object only
+    for (let i0 = 0; i0 < w * h; i0++) {
+      if (bg[i0] || lab[i0]) continue;
+      n++; sizes[n] = 0; lab[i0] = n; const st2 = [i0];
+      while (st2.length) { const i = st2.pop(); sizes[n]++; const x = i % w; for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i - w, i + w]) if (j >= 0 && j < w * h && !bg[j] && !lab[j]) { lab[j] = n; st2.push(j); } }
+    }
+    let keep = 1; for (let k = 1; k <= n; k++) if (sizes[k] > sizes[keep]) keep = k;
+    const map = new Float32Array(w * h); for (let i = 0; i < w * h; i++) map[i] = lab[i] === keep ? 1 : 0;
+    return maskFromMap(map, w, h, base.width, base.height);
+  }
+
+  function computeBB() {                             // bounding box of the pet inside the mask
+    const W = cut.mask.width, H = cut.mask.height, k = Math.min(1, 128 / Math.max(W, H));
+    const sw = Math.max(1, Math.round(W * k)), sh = Math.max(1, Math.round(H * k));
+    const c = document.createElement('canvas'); c.width = sw; c.height = sh;
+    const x = c.getContext('2d', { willReadFrequently: true }); x.drawImage(cut.mask, 0, 0, sw, sh);
+    const a = x.getImageData(0, 0, sw, sh).data;
+    let x0 = sw, y0 = sh, x1 = -1, y1 = -1, cnt = 0;
+    for (let y = 0; y < sh; y++) for (let xx = 0; xx < sw; xx++) if (a[(y * sw + xx) * 4 + 3] > 60) { cnt++; if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+    if (cnt < 12) return false;
+    cut.bb = { x: x0 / k, y: y0 / k, w: (x1 - x0 + 1) / k, h: (y1 - y0 + 1) / k };
+    return true;
+  }
+  function stamps(dst, sil, pad, r) {                // dilate: draw the silhouette around a circle of radius r
+    const n = Math.max(16, Math.min(72, Math.ceil(r * 3)));
+    for (let i = 0; i < n; i++) { const a = i / n * Math.PI * 2; dst.drawImage(sil, pad + Math.cos(a) * r, pad + Math.sin(a) * r); }
+  }
+  function rebuildCut() {                            // cut.sub = the pet only; cut.comp = outline + shadow-ready sticker
+    if (!cut.base || !cut.mask) return;
+    const W = cut.base.width, H = cut.base.height;
+    const sub = document.createElement('canvas'); sub.width = W; sub.height = H;
+    const sx = sub.getContext('2d'); sx.drawImage(cut.base, 0, 0); sx.globalCompositeOperation = 'destination-in'; sx.drawImage(cut.mask, 0, 0);
+    cut.sub = sub;
+    const bbMax = Math.max(cut.bb.w, cut.bb.h);
+    const unit = bbMax / baseArea(st.w, st.h).size;      // base pixels per output pixel at zoom 1
+    const wpx = cut.outline === 'none' ? 0 : cut.ow * unit;
+    const pad = Math.ceil(wpx + 6 * unit);
+    cut.pad = pad;
+    const comp = document.createElement('canvas'); comp.width = W + 2 * pad; comp.height = H + 2 * pad;
+    const cx = comp.getContext('2d');
+    if (wpx > 0) {
+      const tint = (colour) => { const t = document.createElement('canvas'); t.width = W; t.height = H; const tx = t.getContext('2d'); tx.drawImage(cut.mask, 0, 0); tx.globalCompositeOperation = 'source-in'; tx.fillStyle = colour; tx.fillRect(0, 0, W, H); return t; };
+      const ring = (colour, r) => { const t = tint(colour); stamps(cx, t, pad, r); cx.drawImage(t, pad, pad); };
+      if (cut.outline === 'double') { ring(cut.ocolor2, wpx); ring(cut.ocolor, wpx * 0.55); }
+      else if (cut.outline === 'neon') {
+        cx.save(); cx.shadowColor = cut.ocolor2; cx.shadowBlur = wpx * 1.4; ring(cut.ocolor2, wpx * 0.9); cx.restore();
+        ring('#ffffff', wpx * 0.42);
+      } else ring(cut.ocolor, wpx);
+    }
+    cx.drawImage(sub, pad, pad);
+    cut.comp = comp;
+  }
+  function cutXf(W, H) {                             // where the comp canvas lands inside the sticker
+    const a = baseArea(W, H), bb = cut.bb;
+    const k = Math.min(a.size / bb.w, a.size / bb.h) * st.zoom;
+    const lim = Math.max(W, H) * 0.6;
+    st.panX = clamp(st.panX, -lim, lim); st.panY = clamp(st.panY, -lim, lim);
+    return { k, ox: a.cx + st.panX - k * (bb.x + bb.w / 2 + cut.pad), oy: a.cy + st.panY - k * (bb.y + bb.h / 2 + cut.pad) };
+  }
+  function drawCut(x, W, H) {
+    if (!cut.comp) return;
+    const f = cutXf(W, H);
+    if (cut.refine) {                                // show the original dimmed, with the pet bright, so edits are easy to see
+      x.save(); x.globalAlpha = 0.4; x.drawImage(cut.base, f.ox + f.k * cut.pad, f.oy + f.k * cut.pad, cut.base.width * f.k, cut.base.height * f.k); x.restore();
+      x.drawImage(cut.sub, f.ox + f.k * cut.pad, f.oy + f.k * cut.pad, cut.sub.width * f.k, cut.sub.height * f.k);
+      return;
+    }
+    x.save();
+    if (cut.shadow) { x.shadowColor = 'rgba(0,0,0,.32)'; x.shadowBlur = 16; x.shadowOffsetY = 6; }
+    x.imageSmoothingQuality = 'high';
+    x.drawImage(cut.comp, f.ox, f.oy, cut.comp.width * f.k, cut.comp.height * f.k);
+    x.restore();
+  }
+
+  /* brush touch-up of the cut-out edge */
+  let brushLast = null, brushHist = false;
+  function maskPoint(p) { const f = cutXf(st.w, st.h); return { x: (p.x - f.ox) / f.k - cut.pad, y: (p.y - f.oy) / f.k - cut.pad, r: cut.brush.size / f.k }; }
+  function paintDot(a, b) {
+    const m = cut.mask.getContext('2d');
+    m.save(); m.lineCap = 'round'; m.lineJoin = 'round'; m.lineWidth = a.r * 2;
+    if (cut.brush.mode === 'add') { m.globalCompositeOperation = 'source-over'; m.strokeStyle = m.fillStyle = '#fff'; }
+    else { m.globalCompositeOperation = 'destination-out'; m.strokeStyle = m.fillStyle = '#000'; }
+    m.beginPath(); m.moveTo(b.x, b.y); m.lineTo(a.x, a.y); m.stroke(); m.beginPath(); m.arc(a.x, a.y, a.r, 0, Math.PI * 2); m.fill(); m.restore();
+  }
+  function refineDown(p) {
+    const snap = document.createElement('canvas'); snap.width = cut.mask.width; snap.height = cut.mask.height; snap.getContext('2d').drawImage(cut.mask, 0, 0);
+    cut.undo.push(snap); if (cut.undo.length > 8) cut.undo.shift();
+    brushLast = maskPoint(p); paintDot(brushLast, brushLast); brushHist = true; refreshSub(); redraw();
+  }
+  function refineMove(p) { if (!brushLast) return; const q = maskPoint(p); paintDot(q, brushLast); brushLast = q; refreshSub(); redraw(); }
+  function refineUp() { brushLast = null; if (brushHist) { touch(); brushHist = false; renderPanel(); } }
+  function refreshSub() {
+    const sx = cut.sub.getContext('2d'); sx.globalCompositeOperation = 'source-over'; sx.clearRect(0, 0, cut.sub.width, cut.sub.height);
+    sx.drawImage(cut.base, 0, 0); sx.globalCompositeOperation = 'destination-in'; sx.drawImage(cut.mask, 0, 0); sx.globalCompositeOperation = 'source-over';
+  }
+  function enterRefine() { cut.refine = true; st.tool = 'refine'; cv.style.cursor = 'crosshair'; renderPanel(); redraw(); }
+  function leaveRefine(rebuild) {
+    cut.refine = false; st.tool = st.tab === 'draw' ? 'draw' : 'move'; cv.style.cursor = st.tool === 'draw' ? 'crosshair' : 'grab';
+    if (rebuild !== false && cut.mask) { computeBB(); rebuildCut(); }
+    renderPanel(); redraw();
+  }
+
+  async function startCutout() {
+    if (cut.busy || !st.bmp) return;
+    cut.busy = true; cut.progress = 0; renderPanel();
+    try {
+      const base = drawScaled(st.bmp, BASE_MAX);
+      let mask, method;
+      try { mask = await aiMask(base); method = 'AI model running on your phone'; }
+      catch (e) { console.warn('AI cut-out not available, using the quick method:', e); mask = quickMask(base); method = 'quick colour-based cut-out (the AI model is not available here)'; }
+      cut.base = base; cut.mask = mask; cut.method = method;
+      if (!computeBB()) throw new Error('I could not find the pet in this photo. Try one with a plainer background.');
+      cut.on = true; st.cutOn = true; cut.undo = []; st.zoom = 1; st.panX = st.panY = 0;
+      rebuildCut(); touch();
+    } catch (e) { cut.on = false; st.cutOn = false; toast(e.message || String(e), 'err', 4000); }
+    finally { cut.busy = false; renderPanel(); redraw(); }
+  }
+  function stopCutout() { resetCutout(); st.zoom = 1; st.panX = st.panY = 0; touch(); renderPanel(); redraw(); }
+  let rebuildTimer = 0;
+  const rebuildSoon = () => { clearTimeout(rebuildTimer); rebuildTimer = setTimeout(() => { rebuildCut(); redraw(); }, 90); };
+
+  function cutoutPanelHTML() {
+    if (cut.busy) return `<div class="busy-box"><div class="spinner"></div><b>Finding your pet…</b> <span id="cutProg">${Math.round(cut.progress * 100)}%</span><p class="hint">The first time takes a few seconds while the cut-out model loads. Everything stays on your phone.</p></div>`;
+    if (cut.refine) {
+      return `<div class="chips">${chip('data-brush', 'add', '➕ Add back', cut.brush.mode === 'add')}${chip('data-brush', 'erase', '➖ Erase', cut.brush.mode === 'erase')}</div>
+              <div class="field"><label for="stkBrush">Brush size <output id="oBrush">${cut.brush.size}</output></label><input id="stkBrush" type="range" min="6" max="60" value="${cut.brush.size}"></div>
+              <div class="row3"><button type="button" class="btn btn-sm" data-cut="undo" ${cut.undo.length ? '' : 'disabled'}>Undo</button><button type="button" class="btn btn-sm btn-primary" data-cut="done">Done</button></div>
+              <p class="hint">Paint over the picture with your finger. “Erase” removes background that was left on, “Add back” restores a part that was cut off.</p>`;
+    }
+    if (!cut.on) return `<div class="field"><button type="button" class="btn btn-primary" data-cut="start">✂️ Cut out my pet automatically</button><p class="hint">Removes the background and adds a sticker outline.</p></div>`;
+    const styles = [['none', 'No outline'], ['solid', 'Solid'], ['double', 'Double'], ['neon', 'Neon glow']];
+    const cols = ['#ffffff', '#fff3b0', '#ffd1e0', '#ffb703', '#ff5d8f', '#74c0fc', '#69db7c', '#3b2f23'];
+    const c2 = ['#ff7eb6', '#ffd43b', '#74c0fc', '#69db7c', '#b197fc', '#ff8787', '#2b2d42'];
+    const neon = cut.outline === 'neon', dbl = cut.outline === 'double';
+    return `<div class="field"><span class="lbl">Outline style</span><div class="chips">${styles.map((s) => chip('data-ostyle', s[0], s[1], cut.outline === s[0])).join('')}</div></div>
+            ${cut.outline !== 'none' ? `<div class="field"><span class="lbl">${neon ? 'Glow colour' : dbl ? 'Inner colour' : 'Outline colour'}</span><div class="swatches">${(neon ? c2 : cols).map((c) => swatch(neon ? 'data-ocolor2' : 'data-ocolor', c, (neon ? cut.ocolor2 : cut.ocolor) === c)).join('')}</div></div>
+            ${dbl ? `<div class="field"><span class="lbl">Outer colour</span><div class="swatches">${c2.map((c) => swatch('data-ocolor2', c, cut.ocolor2 === c)).join('')}</div></div>` : ''}
+            <div class="field"><label for="stkOw">Outline width <output id="oOw">${cut.ow}</output></label><input id="stkOw" type="range" min="2" max="40" value="${cut.ow}"></div>` : ''}
+            <div class="field"><label class="chk"><input id="stkShadow" type="checkbox" ${cut.shadow ? 'checked' : ''}> Soft shadow</label></div>
+            <div class="field"><label for="stkZoom">Size <output id="oZoom">${Math.round(st.zoom * 100)}%</output></label><input id="stkZoom" type="range" min="40" max="300" value="${Math.round(st.zoom * 100)}"></div>
+            <div class="row3"><button type="button" class="btn btn-sm" data-cut="refine">🖌 Fix the edges</button><button type="button" class="btn btn-sm" data-cut="redo">↻ Cut again</button><button type="button" class="btn btn-sm" data-cut="off">Undo cut-out</button></div>
+            <p class="hint">Drag to move the pet, pinch to resize. Made with: ${esc(cut.method)}.</p>`;
+  }
+  function cutoutClick(d) {
+    if (d.cut) {
+      if (d.cut === 'start' || d.cut === 'redo') { if (d.cut === 'redo') { const keep = { o: cut.outline, c: cut.ocolor, c2: cut.ocolor2, w: cut.ow, s: cut.shadow }; resetCutout(); Object.assign(cut, { outline: keep.o, ocolor: keep.c, ocolor2: keep.c2, ow: keep.w, shadow: keep.s }); } startCutout(); }
+      else if (d.cut === 'off') stopCutout();
+      else if (d.cut === 'refine') enterRefine();
+      else if (d.cut === 'done') leaveRefine(true);
+      else if (d.cut === 'undo') { const snap = cut.undo.pop(); if (snap) { const m = cut.mask.getContext('2d'); m.globalCompositeOperation = 'source-over'; m.clearRect(0, 0, cut.mask.width, cut.mask.height); m.drawImage(snap, 0, 0); refreshSub(); renderPanel(); redraw(); } }
+      return true;
+    }
+    if (d.brush) { cut.brush.mode = d.brush; renderPanel(); return true; }
+    if (d.ostyle) { cut.outline = d.ostyle; touch(); rebuildCut(); renderPanel(); redraw(); return true; }
+    if (d.ocolor) { cut.ocolor = d.ocolor; touch(); rebuildCut(); renderPanel(); redraw(); return true; }
+    if (d.ocolor2) { cut.ocolor2 = d.ocolor2; touch(); rebuildCut(); renderPanel(); redraw(); return true; }
+    return false;
+  }
+  function cutoutInput(id, el) {
+    if (id === 'stkOw') { cut.ow = +el.value; sizeOut('#oOw', cut.ow); touch(); rebuildSoon(); return true; }
+    if (id === 'stkBrush') { cut.brush.size = +el.value; sizeOut('#oBrush', cut.brush.size); return true; }
+    return false;
+  }
 
   /* ---------- 7. open, reset, save, share ---------- */
   function resetState() {
     Object.assign(st, { shape: 'circle', border: '#ffffff', borderW: 18, edge2: false, edge2Color: '#ff7eb6', zoom: 1, panX: 0, panY: 0, layers: [], sel: null, nextId: 1, tab: 'photo', tool: 'move', dirty: false, savedClean: false, busy: false, w: SQ, h: SQ });
     Object.assign(st, { layout: 'sticker', bg: { pattern: 'dots', c1: '#ff8fb8', c2: '#fff0f6' }, strokes: [], pen: { kind: 'pen', color: '#ff3d81', w: 8 } });
     cv.style.cursor = 'grab';
+    resetCutout();
     cv.width = st.w; cv.height = st.h; cv.style.setProperty('--ar', st.w / st.h);
   }
   async function open(rec) {
@@ -562,5 +812,6 @@ const Sticker = (() => {
   $('#stkShare').addEventListener('click', share);
 
   return { open, canClose, redrawNow, _st: st, _exportCanvas: exportCanvas,
+    _cut: () => cutState(),
     _render: render };
 })();
