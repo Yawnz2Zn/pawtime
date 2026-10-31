@@ -442,6 +442,7 @@ function renderTimeline() {
       `<small>${age ? esc(age) + ' · ' : ''}Tap a stack to open it. Nothing is ever deleted automatically.</small>`;
   }
 
+  renderReviewCard(all);
   renderFilterChips(all);
 
   const list = state.filterTag ? all.filter((m) => m.tags.has(state.filterTag)) : all;
@@ -513,6 +514,37 @@ function renderFilterChips(all) {
     `<button class="chip${state.filterTag ? '' : ' on'}" data-filter="">All</button>` +
     TAGS.map((t) => `<button class="chip${state.filterTag === t.id ? ' on' : ''}" data-filter="${t.id}">${t.emoji} ${t.label}${counts[t.id] ? ' · ' + counts[t.id] : ''}</button>`).join('');
 }
+function renderReviewCard(all) {
+  const card = $('#reviewCard');
+  const photoMoments = all.filter((m) => !m.sticker);
+  const now = new Date();
+  const past = photoMoments.filter((m) => { const d = new Date(m.ts); return d.getMonth() === now.getMonth() && d.getDate() === now.getDate() && d.getFullYear() < now.getFullYear(); });
+  if (past.length) {
+    const m = past[past.length - 1];
+    const yrs = now.getFullYear() - new Date(m.ts).getFullYear();
+    card.innerHTML = `<img src="${urlFor(m.cover, 'thumb')}" alt=""><div><b>On this day, ${plural(yrs, 'year')} ago</b><span>Tap to remember it.</span></div>`;
+    card.dataset.open = m.cover.id; card.hidden = false; return;
+  }
+  const thisMonth = photoMoments.filter((m) => monthKey(m.ts) === monthKey(now.getTime()));
+  if (thisMonth.length) {
+    const best = thisMonth.reduce((a, b) => (b.items.length > a.items.length ? b : a));
+    card.innerHTML = `<img src="${urlFor(best.cover, 'thumb')}" alt=""><div><b>This month: ${plural(thisMonth.length, 'moment')}</b><span>Your biggest one has ${plural(best.items.length, 'photo')}. Tap to open.</span></div>`;
+    card.dataset.open = best.cover.id; card.hidden = false; return;
+  }
+  card.hidden = true;
+}
+function jumpToDate(value) {
+  if (!value) return;
+  const days = $$('#timeline .day');
+  if (!days.length) { toast('Nothing on the timeline to jump to yet.', 'err'); return; }
+  // timeline is newest-first: land on the first day that is on/before the chosen date
+  const target = days.find((d) => d.dataset.day <= value) || days[days.length - 1];
+  target.scrollIntoView({ block: 'start' });
+  if (target.dataset.day === value) toast('Jumped to that day');
+  else if (target.dataset.day > value) toast('Nothing on or before that date. Showing your earliest day.', '', 2800);
+  else toast('No photos that day. Showing the nearest earlier day.', '', 2800);
+}
+
 /* ---------- 7. moment viewer ---------- */
 const viewer = { photoId: null };
 function openViewer(photoId) { viewer.photoId = photoId; openSheet('sheet-viewer'); renderViewer(); }
@@ -685,6 +717,56 @@ async function loadDemo() {
   setView('timeline');
   toast(`Added ${total} sample photos. Notice how similar shots fold into stacks ✓`, '', 3800);
 }
+async function clearDemo() {
+  const ids = state.photos.filter((p) => p.demo).map((p) => p.id);
+  if (!ids.length) { toast('There are no sample photos to remove.'); return; }
+  await removePhotos(ids);
+  if (state.profile && state.profile.demo) { state.profile = { name: '', birthday: '', skipped: true }; await metaSet('profile', state.profile); }
+  renderSettings(); renderTimeline(); toast('Sample photos removed ✓');
+}
+
+/* ---------- 10. settings, onboarding, backup ---------- */
+function renderSettings() {
+  $('#setName').value = (state.profile && state.profile.name) || '';
+  $('#setBirthday').value = (state.profile && state.profile.birthday) || '';
+  $('#setSim').value = state.settings.sim;
+  $('#setWin').value = state.settings.windowMin;
+  updateSettingsPreview();
+}
+function updateSettingsPreview() {
+  const s = state.settings;
+  $('#setSimOut').textContent = s.sim <= 4 ? 'very strict' : s.sim <= 12 ? 'balanced' : 'very loose';
+  $('#setWinOut').textContent = `${s.windowMin} min`;
+  const photos = state.photos.filter((p) => p.kind === 'photo').length;
+  const moments = getMoments().filter((m) => !m.sticker).length;
+  $('#setPreview').textContent = photos ? `Right now: ${plural(photos, 'photo')} → ${plural(moments, 'moment')}.` : 'Take or add some photos to see the effect here.';
+}
+async function saveProfile() {
+  state.profile = { ...(state.profile || {}), name: $('#setName').value.trim(), birthday: $('#setBirthday').value, skipped: false, demo: false };
+  await metaSet('profile', state.profile);
+  state.rev++; state.timelineDirty = true; updateChrome();
+}
+async function saveSettings() { await metaSet('settings', state.settings); }
+function blobToDataURL(blob) { return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result); r.onerror = () => rej(r.error); r.readAsDataURL(blob); }); }
+async function exportBackup() {
+  if (!state.photos.length) { toast('Nothing to export yet.', 'err'); return; }
+  try {
+    toast('Preparing backup…', '', 1500);
+    const out = { app: 'PawTime', version: 1, exportedAt: new Date().toISOString(), profile: state.profile, settings: state.settings, photos: [] };
+    for (const p of state.photos) out.photos.push({ id: p.id, ts: p.ts, kind: p.kind, tags: p.tags, pinCover: p.pinCover, image: await blobToDataURL(p.blob) });
+    downloadBlob(new Blob([JSON.stringify(out)], { type: 'application/json' }), `pawtime-backup-${dayKey(Date.now())}.json`);
+    toast('Backup downloaded ✓');
+  } catch (e) { toast('Backup failed: ' + (e.message || e), 'err', 3500); }
+}
+async function wipeAll() {
+  if (!confirm('Delete ALL photos, stickers and settings from this device? This cannot be undone.')) return;
+  await dbClear();
+  for (const k of [...urls.keys()]) { URL.revokeObjectURL(urls.get(k)); urls.delete(k); }
+  state.photos = []; state.filterTag = null; state.profile = { name: '', birthday: '', skipped: true };
+  await metaSet('profile', state.profile);
+  markChanged(); renderSettings(); renderTimeline(); toast('All data deleted');
+}
+
 /* ---------- 11. wiring and start-up ---------- */
 function wire() {
   $$('.tab').forEach((t) => t.addEventListener('click', () => setView(t.dataset.view)));
@@ -708,10 +790,12 @@ function wire() {
     clearTimeout(quickTagTimer); quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 4000);
   });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
+  $('#reviewCard').addEventListener('click', (e) => openViewer(e.currentTarget.dataset.open));
   $('#filterChips').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]'); if (!b) return;
     state.filterTag = b.dataset.filter || null; renderTimeline();
   });
+  $('#jumpDate').addEventListener('change', (e) => jumpToDate(e.target.value));
 
   $$('[data-close]').forEach((b) => b.addEventListener('click', () => { closeSheet(b.dataset.close); if (b.dataset.close === 'sheet-viewer' || b.dataset.close === 'sheet-sticker') renderTimeline(); }));
   $('#vStrip').addEventListener('click', (e) => { const b = e.target.closest('[data-pick]'); if (b) { viewer.photoId = b.dataset.pick; renderViewer(); } });
@@ -721,6 +805,23 @@ function wire() {
     await toggleTagOn(m.items, b.dataset.vtag); renderViewer();
   });
   $('#vActions').addEventListener('click', (e) => { const b = e.target.closest('[data-act]'); if (b) viewerAction(b.dataset.act); });
+
+  const openSettings = () => { renderSettings(); openSheet('sheet-settings'); };
+  $('#btnSettings').addEventListener('click', openSettings);
+  $('#petBadge').addEventListener('click', openSettings);
+  $('#setName').addEventListener('change', saveProfile);
+  $('#setBirthday').addEventListener('change', async () => { await saveProfile(); renderTimeline(); });
+  let simTimer;
+  const onFold = () => {
+    state.settings.sim = +$('#setSim').value; state.settings.windowMin = +$('#setWin').value;
+    state.rev++; state.timelineDirty = true; updateSettingsPreview();
+    clearTimeout(simTimer); simTimer = setTimeout(saveSettings, 300);
+  };
+  $('#setSim').addEventListener('input', onFold); $('#setWin').addEventListener('input', onFold);
+  $('#btnSample').addEventListener('click', loadDemo);
+  $('#btnClearSample').addEventListener('click', clearDemo);
+  $('#btnExport').addEventListener('click', exportBackup);
+  $('#btnWipe').addEventListener('click', wipeAll);
 
   $('#obStart').addEventListener('click', async () => {
     state.profile = { name: $('#obName').value.trim(), birthday: $('#obBirthday').value, skipped: false };

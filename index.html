@@ -20,6 +20,7 @@
   <header class="topbar">
     <div class="brand">🐾 PawTime</div>
     <button id="petBadge" class="pet-badge" aria-label="Pet profile and settings">My pet</button>
+    <button id="btnSettings" class="icon-btn" aria-label="Settings">⚙</button>
   </header>
 
   <main>
@@ -68,7 +69,12 @@
       <div class="tl-scroll" id="tlScroll">
         <div class="tl-head">
           <div id="statLine" class="stat-line"></div>
+          <button id="reviewCard" class="review" hidden></button>
           <div id="filterChips" class="chips" role="group" aria-label="Filter by tag"></div>
+          <div class="date-jump">
+            <label for="jumpDate">Jump to date</label>
+            <input type="date" id="jumpDate">
+          </div>
         </div>
         <div id="timeline"></div>
         <div id="emptyState" class="empty" hidden></div>
@@ -139,6 +145,37 @@
     <div class="sheet-foot">
       <button id="stkSave" class="btn">Save to timeline</button>
       <button id="stkShare" class="btn btn-primary">Share / Download</button>
+    </div>
+  </div>
+
+  <!-- SETTINGS -->
+  <div id="sheet-settings" class="sheet" hidden>
+    <div class="sheet-bar">
+      <button class="icon-btn" data-close="sheet-settings" aria-label="Close">✕</button>
+      <h2>Settings</h2>
+      <span></span>
+    </div>
+    <div class="sheet-body">
+      <h3>Pet profile</h3>
+      <div class="field"><label for="setName">Name</label><input id="setName" maxlength="24" autocomplete="off"></div>
+      <div class="field"><label for="setBirthday">Birthday</label><input id="setBirthday" type="date"></div>
+
+      <h3>Smart folding</h3>
+      <p class="muted small">Photos taken close together that look alike are folded into one “moment”. Nothing is deleted.</p>
+      <div class="field"><label for="setSim">Similarity <output id="setSimOut"></output></label>
+        <input id="setSim" type="range" min="0" max="24" step="1"></div>
+      <div class="field"><label for="setWin">Time window <output id="setWinOut"></output></label>
+        <input id="setWin" type="range" min="2" max="180" step="1"></div>
+      <p id="setPreview" class="preview"></p>
+
+      <h3>Data</h3>
+      <p class="muted small">Everything is stored only on this device (in the app's own storage, not your phone gallery).</p>
+      <div class="btn-col">
+        <button id="btnSample" class="btn">Add sample pet photos</button>
+        <button id="btnClearSample" class="btn">Remove sample photos</button>
+        <button id="btnExport" class="btn">Export backup (.json)</button>
+        <button id="btnWipe" class="btn btn-danger">Delete all data</button>
+      </div>
     </div>
   </div>
 
