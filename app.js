@@ -40,7 +40,7 @@ const TAGS = [
 ];
 const tagEmoji = (id) => (TAGS.find((t) => t.id === id) || {}).emoji || '';
 
-const DEFAULT_SETTINGS = { sim: 10, windowMin: 20 };
+const DEFAULT_SETTINGS = { sim: 10, windowMin: 30 };
 
 const state = {
   photos: [],            // every stored record (photos and stickers)
@@ -178,6 +178,66 @@ function sharpness(src) {
   return Math.round((sum2 / n - mean * mean) * 10) / 10;
 }
 
+/* "Looks alike" (smarter than the dHash alone): a photo also gets a colour signature = a global colour
+   histogram plus a 2x2 grid of colour histograms. Two shots of the same spot, even a minute apart with the
+   pet in another pose, share most of their colours in the same places. */
+function photoSig2(src) {
+  const mid = drawScaled(src, 96);
+  const c = document.createElement('canvas'); c.width = 48; c.height = 36;
+  const x = c.getContext('2d', { willReadFrequently: true });
+  x.imageSmoothingQuality = 'high'; x.drawImage(mid, 0, 0, 48, 36);
+  const d = x.getImageData(0, 0, 48, 36).data;
+  const g6 = new Array(216).fill(0), g4 = new Array(256).fill(0);
+  for (let y = 0; y < 36; y++) for (let xx = 0; xx < 48; xx++) {
+    const i = (y * 48 + xx) * 4, r = d[i], g = d[i + 1], b = d[i + 2];
+    g6[((r * 6 >> 8) * 6 + (g * 6 >> 8)) * 6 + (b * 6 >> 8)]++;
+    const cell = (y >= 18 ? 2 : 0) + (xx >= 24 ? 1 : 0);
+    g4[cell * 64 + ((r >> 6) << 4) + ((g >> 6) << 2) + (b >> 6)]++;
+  }
+  return { g6, g4 };
+}
+/* 0 = identical ... 1 = nothing in common. 30% shape (dHash), 35% overall colours, 35% colours per quarter. */
+function photoDistance(a, b) {
+  const shape = hamming(a.hash, b.hash) / 64;
+  let bc = 0, na = 0, nb = 0;
+  for (let i = 0; i < 216; i++) { na += a.sig.g6[i]; nb += b.sig.g6[i]; }
+  for (let i = 0; i < 216; i++) bc += Math.sqrt((a.sig.g6[i] / na) * (b.sig.g6[i] / nb));
+  const colour = Math.sqrt(Math.max(0, 1 - bc));
+  let inter = 0;
+  for (let q = 0; q < 4; q++) {
+    let sa = 0, sb = 0; for (let i = 0; i < 64; i++) { sa += a.sig.g4[q * 64 + i]; sb += b.sig.g4[q * 64 + i]; }
+    for (let i = 0; i < 64; i++) inter += Math.min(a.sig.g4[q * 64 + i] / sa, b.sig.g4[q * 64 + i] / sb);
+  }
+  return 0.30 * shape + 0.35 * colour + 0.35 * (1 - inter / 4);
+}
+/* The closer in time two photos were taken, the more different they may look and still count as the same moment.
+   Numbers were tuned on 384 test pairs (see PROCESS.md): ~0.34 right after each other, falling to ~0.18 after an hour. */
+function allowedDistance(dtMs, strictness) {
+  const mult = 0.5 + strictness / 20;                 // slider 0..24 -> x0.5 .. x1.7, the default 10 is x1.0
+  return (0.18 + 0.16 * Math.exp(-dtMs / 900000)) * mult;
+}
+function looksAlike(a, b, settings) {
+  const dt = Math.abs(b.ts - a.ts);
+  if (dt > settings.windowMin * 60000) return false;
+  if (a.solo || b.solo) return false;                 // "this one is different" was pressed by the user
+  if (!a.sig || !b.sig) return hamming(a.hash, b.hash) <= settings.sim;   // not fingerprinted yet: old rule
+  return photoDistance(a, b) <= allowedDistance(dt, settings.sim);
+}
+/* Photos saved by older versions have no colour signature yet: add it quietly in the background. */
+async function backfillSigs() {
+  const todo = state.photos.filter((p) => p.kind === 'photo' && !p.sig);
+  if (!todo.length) return;
+  for (const p of todo) {
+    try {
+      const bmp = await blobToBitmap(p.blob);
+      p.sig = photoSig2(bmp); if (bmp.close) bmp.close();
+      await dbPut(p);
+    } catch (e) { p.sig = null; }
+    await sleep(0);
+  }
+  markChanged(); if ($('#view-timeline').classList.contains('active')) renderTimeline();
+}
+
 /* Turn any image source (canvas, bitmap, <img>) into a stored photo record. */
 async function ingestSource(src, opts = {}) {
   const big = drawScaled(src, 1000);
@@ -189,6 +249,7 @@ async function ingestSource(src, opts = {}) {
     blob: await toBlob(big, 'image/jpeg', 0.86),
     thumb: await toBlob(small, 'image/jpeg', 0.8),
     hash: dHash(big),
+    sig: photoSig2(big),
     sharp: sharpness(big),
     tags: opts.tags ? [...opts.tags] : [],
     pinCover: false,
@@ -232,9 +293,8 @@ function buildMoments() {
   for (const p of photos) {
     if (cur) {
       const last = cur[cur.length - 1];
-      const close = p.ts - last.ts <= windowMin * 60000;
-      const alike = hamming(p.hash, last.hash) <= sim && hamming(p.hash, cur[0].hash) <= sim + 6;
-      if (close && alike) { cur.push(p); continue; }
+      // same moment = looks like the previous shot AND still reasonably like the first shot of the group
+      if (looksAlike(last, p, state.settings) && looksAlike(cur[0], p, { ...state.settings, sim: state.settings.sim + 5, windowMin: windowMin * 3 })) { cur.push(p); continue; }
     }
     cur = [p];
     groups.push(cur);
@@ -401,6 +461,7 @@ function setView(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   if (name === 'camera') startCamera(); else { stopCamera(); const qt = $('#quickTags'); if (qt) qt.hidden = true; }
   if (name === 'timeline') renderTimeline();
+  if (name === 'journey') renderJourney();
 }
 function ageAt(ts) {
   const bd = state.profile && state.profile.birthday;
@@ -443,6 +504,7 @@ function renderTimeline() {
   }
 
   renderReviewCard(all);
+  renderTidyCard(all);
   renderFilterChips(all);
 
   const list = state.filterTag ? all.filter((m) => m.tags.has(state.filterTag)) : all;
@@ -573,6 +635,8 @@ function renderViewer() {
   if (cur.kind === 'photo') acts.push(`<button class="btn btn-primary" data-act="sticker">✨ Make a sticker from this photo</button>`);
   if (m.items.length > 1 && cur.id !== m.cover.id) acts.push(`<button class="btn" data-act="cover">⭐ Use this photo as the cover</button>`);
   acts.push(`<button class="btn" data-act="share">⤴ Share / Download</button>`);
+  if (m.items.length > 1) acts.push(`<button class="btn btn-primary" data-act="choose">☑ Choose which of these ${m.items.length} to keep</button>`);
+  if (m.items.length > 1 && cur.kind === 'photo') acts.push(`<button class="btn" data-act="split">✂ This one is different: take it out of the stack</button>`);
   if (m.items.length > 1) acts.push(`<button class="btn" data-act="tidy">🧹 Keep only the cover, delete ${m.items.length - 1} others</button>`);
   acts.push(`<button class="btn btn-danger" data-act="delete">🗑 Delete this ${cur.kind === 'sticker' ? 'sticker' : 'photo'}</button>`);
   $('#vActions').innerHTML = acts.join('');
@@ -598,6 +662,11 @@ async function viewerAction(act) {
     const res = await shareBlob(cur.blob, `pawtime-${dayKey(cur.ts)}.${cur.kind === 'sticker' ? 'png' : 'jpg'}`);
     shareToast(res); return;
   }
+  if (act === 'choose') { openPick(m.id, false); return; }
+  if (act === 'split') {
+    cur.solo = true; await dbPut(cur); markChanged();
+    renderViewer(); renderTimeline(); toast('Taken out of the stack ✓'); return;
+  }
   if (act === 'tidy') {
     const others = m.items.filter((i) => i.id !== m.cover.id);
     if (!confirm(`Delete ${plural(others.length, 'photo')} and keep only the cover? This cannot be undone.`)) return;
@@ -611,6 +680,133 @@ async function viewerAction(act) {
     if (next) { viewer.photoId = next.id; renderViewer(); } else closeSheet('sheet-viewer');
     renderTimeline(); toast('Deleted');
   }
+}
+
+/* ---------- Journey: the big picture (years > months > days) ---------- */
+const journey = { year: null, month: null };               // month is 0-11
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+function bestOf(ms) {                                      // the nicest picture among some moments: a pinned cover, else the sharpest
+  let best = null;
+  for (const m of ms) if (!best || (m.coverIsPinned && !best.coverIsPinned) || (m.coverIsPinned === best.coverIsPinned && m.cover.sharp > best.cover.sharp)) best = m;
+  return best;
+}
+const photoCount = (ms) => ms.reduce((n, m) => n + m.items.length, 0);
+function jyCard(key, ms, title, sub, small, mosaic) {
+  const best = bestOf(ms);
+  const pics = mosaic ? [...new Set(ms.map((m) => monthKey(m.ts)))].slice(0, 4).map((mk) => bestOf(ms.filter((m) => monthKey(m.ts) === mk))) : [best];
+  const img = pics.length >= 4 ? `<div class="jy-mosaic">${pics.map((m) => `<img src="${urlFor(m.cover, 'thumb')}" alt="">`).join('')}</div>` : `<img class="jy-img" src="${urlFor(best.cover, 'thumb')}" alt="">`;
+  return `<button class="jy-card" data-jy="${key}">${img}<div class="jy-info"><b>${esc(title)}</b><span>${esc(sub)}</span>${small ? `<small>${esc(small)}</small>` : ''}</div><span class="jy-go" aria-hidden="true">›</span></button>`;
+}
+function renderJourney() {
+  const host = $('#jyBody'), crumbs = $('#jyCrumbs');
+  const all = getMoments(), ms = all.filter((m) => !m.sticker);
+  if (!ms.length) {
+    crumbs.innerHTML = '';
+    host.innerHTML = `<div class="empty"><div class="big-emoji">🗺</div><p>Your journey starts with the first photo.<br>Years, months and days will build up here.</p><button class="btn btn-primary" id="jyDemo">Try it with sample pet photos</button></div>`;
+    $('#jyDemo').onclick = () => loadDemo(); return;
+  }
+  const byYear = new Map();
+  for (const m of ms) { const y = new Date(m.ts).getFullYear(); if (!byYear.has(y)) byYear.set(y, []); byYear.get(y).push(m); }
+  if (journey.year !== null && !byYear.has(journey.year)) { journey.year = null; journey.month = null; }
+  if (journey.month !== null && !(byYear.get(journey.year) || []).some((m) => new Date(m.ts).getMonth() === journey.month)) journey.month = null;
+
+  const trail = [`<button data-jy="root">All time</button>`];
+  if (journey.year !== null) trail.push(`<button data-jy="year:${journey.year}">${journey.year}</button>`);
+  if (journey.month !== null) trail.push(`<span>${MONTHS[journey.month]}</span>`);
+  crumbs.innerHTML = trail.join('<i>›</i>');
+
+  const photos = state.photos.filter((p) => p.kind === 'photo');
+  const firstTs = photos.length ? Math.min(...photos.map((p) => p.ts)) : ms[0].ts, lastTs = Math.max(...ms.map((m) => m.ts));
+  const name = state.profile && state.profile.name;
+  let html = '';
+  if (journey.year === null) {                             // level 1: all years
+    const days = new Set(ms.map((m) => dayKey(m.ts))).size, stickers = all.length - ms.length, age = ageAt(lastTs);
+    html += `<div class="jy-hero"><div class="jy-title">${name ? esc(name) + '’s journey' : 'Your pet’s journey'}</div>
+      <div class="jy-sub">${esc(age ? age + ' at the latest photo' : 'Since ' + fmtDay(firstTs))}</div>
+      <div class="jy-stats"><div><b>${photos.length}</b><span>photos</span></div><div><b>${ms.length}</b><span>moments</span></div><div><b>${days}</b><span>days</span></div><div><b>${stickers}</b><span>stickers</span></div></div></div>`;
+    const miles = ms.filter((m) => m.milestone || m.tags.has('milestone') || isBirthday(m.ts)).slice(0, 14);
+    if (miles.length) html += `<h3 class="jy-h">⭐ Milestones</h3><div class="jy-miles">${miles.map((m) => `<button data-open="${m.cover.id}"><img src="${urlFor(m.cover, 'thumb')}" alt=""><span>${esc(m.milestone || (isBirthday(m.ts) ? 'Birthday' : 'Milestone'))}</span><small>${esc(fmtDay(m.ts))}</small></button>`).join('')}</div>`;
+    html += '<h3 class="jy-h">Years</h3>';
+    for (const [y, yms] of [...byYear].sort((a, b) => b[0] - a[0])) {
+      const a0 = ageAt(Math.min(...yms.map((m) => m.ts))), a1 = ageAt(Math.max(...yms.map((m) => m.ts)));
+      html += jyCard('year:' + y, yms, String(y), `${plural(photoCount(yms), 'photo')} · ${plural(yms.length, 'moment')}`, a0 && a1 ? (a0 === a1 ? a0 : `${a0.replace(' old', '')} → ${a1}`) : '', true);
+    }
+  } else if (journey.month === null) {                     // level 2: the months of one year
+    const yms = byYear.get(journey.year), per = new Array(12).fill(0);
+    yms.forEach((m) => { per[new Date(m.ts).getMonth()] += m.items.length; });
+    const top = Math.max(...per);
+    html += `<div class="jy-hero small"><div class="jy-title">${journey.year}</div><div class="jy-sub">${plural(photoCount(yms), 'photo')} in ${plural(yms.length, 'moment')}</div>
+      <div class="jy-bars" role="group" aria-label="Photos per month">${per.map((n, i) => `<button data-jy="month:${i}" ${n ? '' : 'disabled'} aria-label="${MONTHS[i]}: ${n} photos"><i style="height:${n ? Math.max(8, Math.round(n / top * 100)) : 3}%"></i><span>${MONTHS[i][0]}</span></button>`).join('')}</div></div><h3 class="jy-h">Months</h3>`;
+    for (let i = 11; i >= 0; i--) {
+      const mm = yms.filter((m) => new Date(m.ts).getMonth() === i); if (!mm.length) continue;
+      html += jyCard('month:' + i, mm, MONTHS[i], `${plural(photoCount(mm), 'photo')} · ${plural(mm.length, 'moment')}`, ageAt(new Date(journey.year, i + 1, 0, 12).getTime()));
+    }
+  } else {                                                 // level 3: the days of one month
+    const mms = (byYear.get(journey.year) || []).filter((m) => new Date(m.ts).getMonth() === journey.month);
+    html += `<div class="jy-hero small"><div class="jy-title">${MONTHS[journey.month]} ${journey.year}</div><div class="jy-sub">${plural(photoCount(mms), 'photo')} in ${plural(mms.length, 'moment')}</div></div><h3 class="jy-h">Days (tap one to open it on the timeline)</h3>`;
+    const byDay = new Map();
+    mms.forEach((m) => { const k = dayKey(m.ts); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(m); });
+    for (const [dk, dms] of [...byDay].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
+      const dn = dayNumber(dms[0].ts, firstTs);
+      html += jyCard('day:' + dk, dms, fmtDay(dms[0].ts), `${plural(photoCount(dms), 'photo')} → ${plural(dms.length, 'moment')}`, dn.label + (isBirthday(dms[0].ts) ? ' · 🎂 Birthday!' : ''));
+    }
+  }
+  host.innerHTML = html;
+  $('#jyScroll').scrollTop = 0;
+}
+function journeyGo(key) {
+  if (key === 'root') { journey.year = null; journey.month = null; }
+  else if (key.startsWith('year:')) { journey.year = +key.slice(5); journey.month = null; }
+  else if (key.startsWith('month:')) journey.month = +key.slice(6);
+  else if (key.startsWith('day:')) { setView('timeline'); state.filterTag = null; renderTimeline(); jumpToDate(key.slice(4)); return; }
+  renderJourney();
+}
+/* ---------- choose what to keep from a folded moment ---------- */
+const pick = { momentId: null, ids: [], keep: new Set(), queue: false, skipped: new Set() };
+const pickCandidates = () => getMoments().filter((m) => !m.sticker && m.items.length > 1 && !pick.skipped.has(m.id)).sort((a, b) => b.items.length - a.items.length);
+function openPick(momentId, fromQueue) {
+  const m = getMoments().find((x) => x.id === momentId);
+  if (!m || m.items.length < 2) return;
+  pick.queue = !!fromQueue; pick.momentId = m.id; pick.ids = m.items.map((i) => i.id); pick.keep = new Set([m.cover.id]);
+  renderPick(); openSheet('sheet-pick');
+}
+function renderPick() {
+  const items = pick.ids.map((id) => state.photos.find((p) => p.id === id)).filter(Boolean);
+  const sharpest = items.reduce((b, p) => (p.sharp > b.sharp ? p : b), items[0]);
+  $('#pickTitle').textContent = `${items.length} similar photos`;
+  $('#pickGrid').innerHTML = items.map((p) => `<button class="pick-item${pick.keep.has(p.id) ? ' on' : ''}" data-pickid="${p.id}" aria-pressed="${pick.keep.has(p.id)}">
+      <img src="${urlFor(p, 'thumb')}" alt=""><span class="tick">${pick.keep.has(p.id) ? '✓' : ''}</span>
+      <span class="when">${fmtTime(p.ts)}${p.id === sharpest.id ? ' · sharpest' : ''}</span></button>`).join('');
+  const k = pick.keep.size, d = items.length - k;
+  const go = $('#pickGo');
+  go.disabled = k === 0;
+  go.textContent = k === 0 ? 'Tick at least one' : d === 0 ? 'Keep all' : `Keep ${k}, delete ${d}`;
+  $('#pickSkip').textContent = pick.queue ? 'Skip' : 'Cancel';
+  const left = pick.queue ? pickCandidates().length : 0;
+  $('#pickHint').textContent = 'Tap the photos you want to keep. The ticked ones stay, the rest are deleted when you press the button.' + (left > 1 ? ` (${left - 1} more stacks to look at afterwards.)` : '');
+}
+function pickNext() {
+  if (pick.queue) { const c = pickCandidates(); if (c.length) { openPick(c[0].id, true); return; } toast('All tidy ✓'); }
+  closeSheet('sheet-pick'); renderTimeline();
+}
+async function pickGo() {
+  const del = pick.ids.filter((id) => !pick.keep.has(id));
+  if (!pick.keep.size) return;
+  if (del.length) {
+    if (!confirm(`Delete ${plural(del.length, 'photo')} and keep ${pick.keep.size}? This cannot be undone.`)) return;
+    await removePhotos(del);
+    toast(`Kept ${pick.keep.size}, deleted ${del.length} ✓`);
+  }
+  closeSheet('sheet-viewer');
+  pickNext();
+}
+function renderTidyCard(all) {
+  const c = all.filter((m) => !m.sticker && m.items.length > 1);
+  const card = $('#tidyCard');
+  if (!c.length) { card.hidden = true; return; }
+  const extra = c.reduce((n, m) => n + m.items.length - 1, 0);
+  card.innerHTML = `<div class="tidy-ico">🧹</div><div><b>${plural(c.length, 'stack')} of similar photos</b><span>${plural(extra, 'extra shot')} you could clear. Tap to choose what to keep.</span></div>`;
+  card.hidden = false;
 }
 
 /* ---------- sharing ---------- */
@@ -790,6 +986,21 @@ function wire() {
     clearTimeout(quickTagTimer); quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 4000);
   });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
+  $('#jyBody').addEventListener('click', (e) => {
+    const o = e.target.closest('[data-open]'); if (o) { openViewer(o.dataset.open); return; }
+    const b = e.target.closest('[data-jy]'); if (b) journeyGo(b.dataset.jy);
+  });
+  $('#jyCrumbs').addEventListener('click', (e) => { const b = e.target.closest('[data-jy]'); if (b) journeyGo(b.dataset.jy); });
+  $('#tidyCard').addEventListener('click', () => { pick.skipped.clear(); const c = pickCandidates(); if (c.length) openPick(c[0].id, true); });
+  $('#pickGrid').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-pickid]'); if (!b) return;
+    const id = b.dataset.pickid; if (pick.keep.has(id)) pick.keep.delete(id); else pick.keep.add(id);
+    renderPick();
+  });
+  $('#pickAll').addEventListener('click', () => { pick.keep = new Set(pick.ids); renderPick(); });
+  $('#pickGo').addEventListener('click', pickGo);
+  $('#pickSkip').addEventListener('click', () => { if (pick.queue) { pick.skipped.add(pick.momentId); pickNext(); } else closeSheet('sheet-pick'); });
+  $('#pickClose').addEventListener('click', () => closeSheet('sheet-pick'));
   $('#reviewCard').addEventListener('click', (e) => openViewer(e.currentTarget.dataset.open));
   $('#filterChips').addEventListener('click', (e) => {
     const b = e.target.closest('[data-filter]'); if (!b) return;
@@ -859,6 +1070,7 @@ async function init() {
     state.settings = { ...DEFAULT_SETTINGS, ...((await metaGet('settings')) || {}) };
   } catch (e) { toast('Could not read saved photos: ' + (e.message || e), 'err', 5000); }
   state.rev++; updateChrome();
+  backfillSigs();
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
     navigator.serviceWorker.register('service-worker.js').catch(() => {});
   }
