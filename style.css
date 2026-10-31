@@ -212,3 +212,48 @@ input[type=range]{width:100%;accent-color:var(--accent)}
 .pick-item .tick{position:absolute;top:8px;right:8px;width:28px;height:28px;border-radius:50%;background:rgba(255,255,255,.9);border:2px solid var(--sand);color:#fff;font-weight:800;display:flex;align-items:center;justify-content:center}
 .pick-item.on .tick{background:var(--accent);border-color:var(--accent)}
 .pick-item .when{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.55);color:#fff;border-radius:999px;font-size:.72rem;padding:2px 8px;font-weight:600}
+/* journey page */
+.crumbs{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:12px 16px 0;font-weight:700;font-size:.9rem;min-height:34px}
+.crumbs button{background:var(--sand2);border:0;border-radius:999px;padding:5px 12px;font-weight:700;color:var(--accent)}
+.crumbs i{font-style:normal;color:var(--muted)}
+.jy-body{padding:8px 16px 28px}
+.jy-hero{background:linear-gradient(135deg,#f6d8a8,#e8b98a);border-radius:22px;padding:18px 16px 14px;color:#4a2f17;margin-top:6px;box-shadow:0 6px 18px rgba(155,127,98,.25)}
+.jy-hero.small{padding-bottom:10px}
+.jy-title{font-weight:800;font-size:1.35rem}
+.jy-sub{font-size:.88rem;opacity:.85;margin-top:2px}
+.jy-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:14px}
+.jy-stats div{background:rgba(255,255,255,.55);border-radius:14px;padding:8px 2px;text-align:center}
+.jy-stats b{display:block;font-size:1.2rem}
+.jy-stats span{font-size:.7rem;font-weight:700;opacity:.75}
+.jy-h{margin:20px 0 8px;font-size:.95rem;color:var(--brown)}
+.jy-miles{display:flex;gap:10px;overflow-x:auto;padding-bottom:6px;scrollbar-width:none}
+.jy-miles::-webkit-scrollbar{display:none}
+.jy-miles button{flex:none;width:104px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:6px;text-align:left}
+.jy-miles img{width:100%;aspect-ratio:1;object-fit:cover;border-radius:11px;display:block}
+.jy-miles span{display:block;font-weight:700;font-size:.76rem;margin-top:5px;line-height:1.15}
+.jy-miles small{color:var(--muted);font-size:.68rem}
+.jy-card{display:flex;align-items:center;gap:12px;width:100%;text-align:left;background:var(--card);border:1px solid var(--line);border-radius:20px;padding:10px;margin-bottom:10px;box-shadow:0 2px 8px rgba(74,61,46,.06)}
+.jy-card:active{background:var(--sand2)}
+.jy-img,.jy-mosaic{flex:none;width:86px;height:86px;border-radius:14px;overflow:hidden}
+.jy-img{object-fit:cover;display:block}
+.jy-mosaic{display:grid;grid-template-columns:1fr 1fr;gap:2px;background:var(--sand2)}
+.jy-mosaic img{width:100%;height:100%;object-fit:cover;display:block}
+.jy-info{flex:1;min-width:0}
+.jy-info b{display:block;font-size:1.05rem}
+.jy-info span{display:block;font-size:.86rem;color:var(--ink)}
+.jy-info small{display:block;color:var(--muted);font-size:.78rem;margin-top:2px}
+.jy-go{font-size:1.6rem;color:var(--sand);padding-right:4px}
+.jy-bars{display:grid;grid-template-columns:repeat(12,1fr);gap:4px;height:84px;margin-top:12px;align-items:end}
+.jy-bars button{height:100%;background:none;border:0;padding:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px}
+.jy-bars i{display:block;width:100%;background:#fff;opacity:.9;border-radius:6px 6px 2px 2px;min-height:3px}
+.jy-bars button[disabled] i{opacity:.35}
+.jy-bars span{font-size:.68rem;font-weight:800;color:#6b4a2a}
+/* timeline polish: a growth line running down the left, with a dot for every day */
+#timeline .day{position:relative;margin-left:22px;padding-left:14px;border-left:3px solid var(--sand2)}
+#timeline .day::before{content:"";position:absolute;left:-10px;top:13px;width:14px;height:14px;border-radius:50%;background:var(--card);border:3px solid var(--accent)}
+#timeline .month-h{background:linear-gradient(var(--bg) 80%,rgba(246,239,226,0));border-bottom:0;padding-bottom:10px}
+#timeline .month-h span{background:var(--accent);color:#fff;border-radius:999px;padding:3px 12px;font-size:.88rem}
+.moment{box-shadow:0 2px 6px rgba(74,61,46,.14)}
+.moment.stack{box-shadow:3px 3px 0 -1px var(--sand2),3px 3px 0 0 var(--sand),6px 6px 0 -2px var(--sand),0 3px 8px rgba(74,61,46,.14)}
+.tab-ico{transition:transform .15s}
+.tab.active .tab-ico{transform:translateY(-2px) scale(1.12)}
