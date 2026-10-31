@@ -461,7 +461,6 @@ function setView(name) {
   $$('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === name));
   if (name === 'camera') startCamera(); else { stopCamera(); const qt = $('#quickTags'); if (qt) qt.hidden = true; }
   if (name === 'timeline') renderTimeline();
-  if (name === 'journey') renderJourney();
 }
 function ageAt(ts) {
   const bd = state.profile && state.profile.birthday;
@@ -682,85 +681,6 @@ async function viewerAction(act) {
   }
 }
 
-/* ---------- Journey: the big picture (years > months > days) ---------- */
-const journey = { year: null, month: null };               // month is 0-11
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-function bestOf(ms) {                                      // the nicest picture among some moments: a pinned cover, else the sharpest
-  let best = null;
-  for (const m of ms) if (!best || (m.coverIsPinned && !best.coverIsPinned) || (m.coverIsPinned === best.coverIsPinned && m.cover.sharp > best.cover.sharp)) best = m;
-  return best;
-}
-const photoCount = (ms) => ms.reduce((n, m) => n + m.items.length, 0);
-function jyCard(key, ms, title, sub, small, mosaic) {
-  const best = bestOf(ms);
-  const pics = mosaic ? [...new Set(ms.map((m) => monthKey(m.ts)))].slice(0, 4).map((mk) => bestOf(ms.filter((m) => monthKey(m.ts) === mk))) : [best];
-  const img = pics.length >= 4 ? `<div class="jy-mosaic">${pics.map((m) => `<img src="${urlFor(m.cover, 'thumb')}" alt="">`).join('')}</div>` : `<img class="jy-img" src="${urlFor(best.cover, 'thumb')}" alt="">`;
-  return `<button class="jy-card" data-jy="${key}">${img}<div class="jy-info"><b>${esc(title)}</b><span>${esc(sub)}</span>${small ? `<small>${esc(small)}</small>` : ''}</div><span class="jy-go" aria-hidden="true">›</span></button>`;
-}
-function renderJourney() {
-  const host = $('#jyBody'), crumbs = $('#jyCrumbs');
-  const all = getMoments(), ms = all.filter((m) => !m.sticker);
-  if (!ms.length) {
-    crumbs.innerHTML = '';
-    host.innerHTML = `<div class="empty"><div class="big-emoji">🗺</div><p>Your journey starts with the first photo.<br>Years, months and days will build up here.</p><button class="btn btn-primary" id="jyDemo">Try it with sample pet photos</button></div>`;
-    $('#jyDemo').onclick = () => loadDemo(); return;
-  }
-  const byYear = new Map();
-  for (const m of ms) { const y = new Date(m.ts).getFullYear(); if (!byYear.has(y)) byYear.set(y, []); byYear.get(y).push(m); }
-  if (journey.year !== null && !byYear.has(journey.year)) { journey.year = null; journey.month = null; }
-  if (journey.month !== null && !(byYear.get(journey.year) || []).some((m) => new Date(m.ts).getMonth() === journey.month)) journey.month = null;
-
-  const trail = [`<button data-jy="root">All time</button>`];
-  if (journey.year !== null) trail.push(`<button data-jy="year:${journey.year}">${journey.year}</button>`);
-  if (journey.month !== null) trail.push(`<span>${MONTHS[journey.month]}</span>`);
-  crumbs.innerHTML = trail.join('<i>›</i>');
-
-  const photos = state.photos.filter((p) => p.kind === 'photo');
-  const firstTs = photos.length ? Math.min(...photos.map((p) => p.ts)) : ms[0].ts, lastTs = Math.max(...ms.map((m) => m.ts));
-  const name = state.profile && state.profile.name;
-  let html = '';
-  if (journey.year === null) {                             // level 1: all years
-    const days = new Set(ms.map((m) => dayKey(m.ts))).size, stickers = all.length - ms.length, age = ageAt(lastTs);
-    html += `<div class="jy-hero"><div class="jy-title">${name ? esc(name) + '’s journey' : 'Your pet’s journey'}</div>
-      <div class="jy-sub">${esc(age ? age + ' at the latest photo' : 'Since ' + fmtDay(firstTs))}</div>
-      <div class="jy-stats"><div><b>${photos.length}</b><span>photos</span></div><div><b>${ms.length}</b><span>moments</span></div><div><b>${days}</b><span>days</span></div><div><b>${stickers}</b><span>stickers</span></div></div></div>`;
-    const miles = ms.filter((m) => m.milestone || m.tags.has('milestone') || isBirthday(m.ts)).slice(0, 14);
-    if (miles.length) html += `<h3 class="jy-h">⭐ Milestones</h3><div class="jy-miles">${miles.map((m) => `<button data-open="${m.cover.id}"><img src="${urlFor(m.cover, 'thumb')}" alt=""><span>${esc(m.milestone || (isBirthday(m.ts) ? 'Birthday' : 'Milestone'))}</span><small>${esc(fmtDay(m.ts))}</small></button>`).join('')}</div>`;
-    html += '<h3 class="jy-h">Years</h3>';
-    for (const [y, yms] of [...byYear].sort((a, b) => b[0] - a[0])) {
-      const a0 = ageAt(Math.min(...yms.map((m) => m.ts))), a1 = ageAt(Math.max(...yms.map((m) => m.ts)));
-      html += jyCard('year:' + y, yms, String(y), `${plural(photoCount(yms), 'photo')} · ${plural(yms.length, 'moment')}`, a0 && a1 ? (a0 === a1 ? a0 : `${a0.replace(' old', '')} → ${a1}`) : '', true);
-    }
-  } else if (journey.month === null) {                     // level 2: the months of one year
-    const yms = byYear.get(journey.year), per = new Array(12).fill(0);
-    yms.forEach((m) => { per[new Date(m.ts).getMonth()] += m.items.length; });
-    const top = Math.max(...per);
-    html += `<div class="jy-hero small"><div class="jy-title">${journey.year}</div><div class="jy-sub">${plural(photoCount(yms), 'photo')} in ${plural(yms.length, 'moment')}</div>
-      <div class="jy-bars" role="group" aria-label="Photos per month">${per.map((n, i) => `<button data-jy="month:${i}" ${n ? '' : 'disabled'} aria-label="${MONTHS[i]}: ${n} photos"><i style="height:${n ? Math.max(8, Math.round(n / top * 100)) : 3}%"></i><span>${MONTHS[i][0]}</span></button>`).join('')}</div></div><h3 class="jy-h">Months</h3>`;
-    for (let i = 11; i >= 0; i--) {
-      const mm = yms.filter((m) => new Date(m.ts).getMonth() === i); if (!mm.length) continue;
-      html += jyCard('month:' + i, mm, MONTHS[i], `${plural(photoCount(mm), 'photo')} · ${plural(mm.length, 'moment')}`, ageAt(new Date(journey.year, i + 1, 0, 12).getTime()));
-    }
-  } else {                                                 // level 3: the days of one month
-    const mms = (byYear.get(journey.year) || []).filter((m) => new Date(m.ts).getMonth() === journey.month);
-    html += `<div class="jy-hero small"><div class="jy-title">${MONTHS[journey.month]} ${journey.year}</div><div class="jy-sub">${plural(photoCount(mms), 'photo')} in ${plural(mms.length, 'moment')}</div></div><h3 class="jy-h">Days (tap one to open it on the timeline)</h3>`;
-    const byDay = new Map();
-    mms.forEach((m) => { const k = dayKey(m.ts); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(m); });
-    for (const [dk, dms] of [...byDay].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
-      const dn = dayNumber(dms[0].ts, firstTs);
-      html += jyCard('day:' + dk, dms, fmtDay(dms[0].ts), `${plural(photoCount(dms), 'photo')} → ${plural(dms.length, 'moment')}`, dn.label + (isBirthday(dms[0].ts) ? ' · 🎂 Birthday!' : ''));
-    }
-  }
-  host.innerHTML = html;
-  $('#jyScroll').scrollTop = 0;
-}
-function journeyGo(key) {
-  if (key === 'root') { journey.year = null; journey.month = null; }
-  else if (key.startsWith('year:')) { journey.year = +key.slice(5); journey.month = null; }
-  else if (key.startsWith('month:')) journey.month = +key.slice(6);
-  else if (key.startsWith('day:')) { setView('timeline'); state.filterTag = null; renderTimeline(); jumpToDate(key.slice(4)); return; }
-  renderJourney();
-}
 /* ---------- choose what to keep from a folded moment ---------- */
 const pick = { momentId: null, ids: [], keep: new Set(), queue: false, skipped: new Set() };
 const pickCandidates = () => getMoments().filter((m) => !m.sticker && m.items.length > 1 && !pick.skipped.has(m.id)).sort((a, b) => b.items.length - a.items.length);
@@ -986,11 +906,6 @@ function wire() {
     clearTimeout(quickTagTimer); quickTagTimer = setTimeout(() => { $('#quickTags').hidden = true; }, 4000);
   });
   $('#timeline').addEventListener('click', (e) => { const b = e.target.closest('[data-open]'); if (b) openViewer(b.dataset.open); });
-  $('#jyBody').addEventListener('click', (e) => {
-    const o = e.target.closest('[data-open]'); if (o) { openViewer(o.dataset.open); return; }
-    const b = e.target.closest('[data-jy]'); if (b) journeyGo(b.dataset.jy);
-  });
-  $('#jyCrumbs').addEventListener('click', (e) => { const b = e.target.closest('[data-jy]'); if (b) journeyGo(b.dataset.jy); });
   $('#tidyCard').addEventListener('click', () => { pick.skipped.clear(); const c = pickCandidates(); if (c.length) openPick(c[0].id, true); });
   $('#pickGrid').addEventListener('click', (e) => {
     const b = e.target.closest('[data-pickid]'); if (!b) return;
