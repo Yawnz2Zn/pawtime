@@ -1,68 +1,49 @@
 # PROCESS.md
 
-> **Fill in every `TODO` with what really happened before you submit.** The marker is looking for an honest account, not a perfect one. Delete this note when done.
+1. Starting idea
 
-## 1. Starting idea
+I photograph my pet constantly. My album fills with dozens of near-identical photos, I can't bear to delete them, and I can't find a specific moment later. PawTime answers that one problem: shoot inside the app → save automatically → fold similar photos → growth timeline → turn a favourite into a sticker and share it. After trying the first version I added a smarter "looks alike" rule, a Journey overview, a more capable Sticker Studio, video recording and a Chinese version.
 
-My group's project, PawTime (SD5911 tutorial), was a whole pet-life-cycle app: memory bank, AI pet videos, sticker studio, keepsake shop and milestone reminders. That is far too much for one small interactive experience, and the brief says one carefully designed interaction is enough.
+I left out cloud accounts and family sharing, AI video, a keepsake shop, reminders and auto-tagging: they need a backend or paid services and would have meant several half-finished features instead of one polished interaction.
 
-I narrowed it to the problem that started the whole idea for me: **I photograph my pet constantly, my album fills with dozens of almost-identical photos, I can't bear to delete them, and I can't find a specific moment later.**
+Decisions
 
-My starting design: *shoot inside the app → save automatically → fold similar photos together → show a growth timeline → turn a favourite into a sticker and share it.*
+Installable web app (PWA), not native: I can finish, test and share it in the time available, and it still installs and uses the camera.
+Fold instead of delete: I never delete my own photos, so the app reduces clutter without asking me to.
+Rules for folding, an AI model only for cut-out: a perceptual hash, colour histograms and a time window run offline and I can explain them. Cutting out a pet needs a neural network (U²-Net-P), which runs in the browser so nothing is uploaded.
+Chinese version: my family reads Chinese, so there is a 中文 / EN switch.
+2. Changes I made
+The sticker preview stays pinned. Screenshots of the Sticker Studio showed that choosing a shape near the bottom scrolled the preview out of view, so I could not see what my tap did. I made it position: sticky and sized it to the screen height (style.css).
+Folding looks at colour as well as layout, and I choose what to keep. Photos I took separately of the same spot stayed apart because dHash changes a lot when the camera moves. I added colour signatures and a time-aware threshold (re-takes folded: 43% → 77%, wrong merges 4%; README has the test). Because the stronger rule can over-merge, I added Choose what to keep, a tidy card and This one is different (app.js: photoSig2, looksAlike, openPick).
+Journey page. My mother asked for an overview: the timeline is good for finding a day but a long scroll after a few months. The new tab goes years → months → days with cover, counts, age and photos per month.
+Sticker Studio v2. Text, emoji and decorations became free layers (drag, pinch, rotate, duplicate), plus pet cut-out with outline, card patterns and freehand drawing (sticker.js, vendor/).
+Video. My mother told me she records clips as often as she takes photos, and I had forgotten this. I added a Photo / Video switch with a timer, a 60 s limit, a poster frame and playback (app.js, section 5b).
+3. User trial
 
-What I deliberately cut: cloud backup, AI video, keepsake shop, reminders, AI auto-tagging. They need a backend, paid services, or a native app, and would have meant several half-finished features.
+I asked my mother, a pet owner, to try the app on her own phone using the GitHub Pages link. I gave her no instructions and just watched and listened. Three things came out of it, and I changed the app for each:
 
-**Decisions along the way**
-- *Installable web app (PWA) instead of a native app:* I can finish, test and share it in the time available, and it still installs on a phone and uses the camera.
-- *Fold instead of delete:* my own behaviour is that I never delete, so the app should reduce clutter without asking me to throw anything away.
-- *Rule-based "smart" instead of an AI model:* a perceptual hash plus time window runs offline, costs nothing, and is something I can explain line by line.
-- *Sample photos drawn in code:* so a marker without a camera (or without a pet) can still see the folding work.
+She did not notice the tag buttons. They were too small to catch her eye, so she never used them. I made them larger and clearer (style.css, commit "Make tag buttons larger after the user did not notice them").
+She asked for video. She records short clips of the pet as often as she takes photos, and I had forgotten this completely. I added a Photo / Video switch to the camera, with a timer, a 60-second limit, a poster frame, playback on the timeline and a download option (app.js, section 5b).
+She wanted an overview. The timeline is good for finding one day, but she wanted to see the pet's whole story at a glance. I added the Journey tab, which zooms out from years to months to days with a cover photo, counts, age and photos per month (app.js, Journey section).
 
-## 2. A design or code change I made
+What surprised me most was the video request: it was an everyday habit that I had never thought of, because I was designing around my own photo problem. The trial also showed me that features I considered obvious (tags) were invisible to someone who had not built the app.
 
-**Change: the sticker preview stays pinned while you edit.**
-After the first working version, I ran the app in a headless browser and took screenshots of the Sticker Studio. When I picked a shape or colour near the bottom of the screen, the page scrolled and the sticker preview slid out of view, so I could not see what my tap had done. That breaks the loop of *action → response → feedback*. I made the preview `position: sticky` at the top and sized it relative to the screen height so the controls and the result are visible together.
+4. Commit history
 
-TODO (optional, add a second change if you made one, e.g. changing the default similarity threshold after testing with real photos of your pet).
+I built the app with Claude's help and had a working version before I started committing. I then added it in stages (camera and storage, timeline and folding, viewer and sharing, tags, Sticker Studio, cards and drawing, cut-out, settings, smarter grouping, Journey, video, Chinese version), running and checking each one before committing. The commit dates show when I added and checked each part, not when the code was first written. I did not change any dates.
 
-## 3. User trial
+5. AI tools used
 
-TODO: fill in. Suggested structure:
+I used Claude (Anthropic) as a coding assistant. The only AI model inside the app is the cut-out network (U²-Net-P, Apache 2.0); everything else is ordinary algorithms.
 
-- **Who / setup:** e.g. "a classmate who owns a dog, on her own iPhone, using the GitHub Pages link. I gave no instructions."
-- **What they tried first:** TODO
-- **Where they hesitated or got confused:** TODO (e.g. did they notice the tag buttons? understand the ×5 badge? find the sticker button?)
-- **What surprised me:** TODO
-- **Improvement I made because of it:** TODO (one concrete change, with the file/function it touched), **or** why I kept the design as it was.
-- **Result after the change:** TODO (did the same hesitation go away when they tried again, or what I would test next)
+What Claude did: wrote the code from my descriptions (HTML, CSS, JavaScript, service worker, Sticker Studio, i18n), wrote and ran the smoke test, converted the cut-out model to run in the browser, and drafted the README and this file for me to correct.
 
-## Note about my commit history
+What I did: came up with the idea and decided what goes in and what stays out; designed the interaction (fold not delete, tags, timeline, Journey, how a sticker is made); reviewed each version on screen and asked for changes (cut-out with outline, free layers, drawing, grouping separately shot photos, choose-what-to-keep, video, Chinese version, with pet-sticker examples as references); split the work into stages and committed them one by one; ran the user trial and decided what to change; set up GitHub and GitHub Pages.
 
-Claude wrote a complete first draft of the whole app in one go before I began committing. I then added it to this repository in **six stages** (1 camera and storage, 2 timeline and folding, 3 moment viewer and sharing, 4 tags and filter, 5 sticker studio, 6 settings and extras). I copied in one stage at a time and ran and tested it before each commit. So the commit dates show **when I added, tested and reviewed each part**, not when the code was first written. I did not change any commit dates. The later commits (user-trial change, README, this file) are my own work.
+Kept: Claude suggested a perceptual hash plus a time window instead of an AI model for similar photos. I kept it because it works offline and I can explain it. Changed: Claude's first plan was a general "photo → sticker" tool. I redirected it to shoot-to-save and the growth timeline, which is my real problem.
 
-TODO: confirm this is accurate for you, and add one or two lines on what you actually checked at each stage (for example "tested the camera on my phone before committing stage 1").
+Where AI needed checking: the first sticker preview scrolled away (change 1), and folding missed separately shot photos (change 2); I found both by using the app.
 
-## 4. AI tools used
+6. Code I can explain
 
-I used **Claude (Anthropic)** as a coding and planning assistant. I did not use any AI model *inside* the app: all "smart" behaviour is ordinary algorithm code (dHash + Laplacian sharpness).
-
-**What Claude did**
-- Helped me scope the project: it turned my long feature list into tiers and helped me choose a PWA.
-- Wrote the first complete version of the code (HTML, CSS, JavaScript, service worker, icon generator).
-- Wrote a headless-browser smoke test (`tests/smoke_test.py`) and ran it; it found a layout problem (section 2) and test timing issues.
-- Drafted the first versions of README.md and this file's structure.
-
-**What I did myself**
-- TODO: be specific, e.g. chose the idea and priorities, ran the app on my phone, ran the user trial, tuned the thresholds, wrote the trial section, and checked I can explain the main code.
-
-**One suggestion I kept**
-Claude suggested detecting similar photos with a **perceptual hash plus a time window** rather than an AI model. I kept it because it works offline for free and I could explain it, and because the sample data showed it folding 35 photos into 11 moments with the sharpest shot as cover.
-
-**One suggestion I changed**
-TODO: choose a real one. Honest candidates from my conversation: (a) Claude's first plan was a general "photo → sticker" tool; I redirected it to focus on shoot-to-save and the growth timeline because that is my real problem. (b) Claude proposed the sticker preview as a normal scrolling block; testing showed it scrolled away, so I had it pinned (section 2). Replace or extend with whatever is true for you.
-
-## 5. Where AI got it wrong or needed checking
-TODO (optional but valuable): e.g. a bug you found yourself, something that did not work on your phone, or something you rewrote to understand it.
-
-## 6. Code I can explain
-`buildMoments()` in `app.js`: it walks photos oldest → newest. A photo joins the current moment if it was taken within the time window **and** its dHash is within the similarity threshold of the previous photo (and not too far from the first). Otherwise it starts a new moment. The timeline renders those moments, so changing the **Similarity** slider changes what the user sees.
+buildMoments() and looksAlike() walk photos oldest → newest. A photo joins the current moment if it is within the time window and photoDistance() is below allowedDistance() for that time gap, for both the previous photo and the first of the stack; otherwise it starts a new moment. The timeline and Journey render these moments, so the Similarity slider changes what you see. stamps() in sticker.js makes the sticker outline by drawing the silhouette around a circle.
