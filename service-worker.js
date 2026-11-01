@@ -7,6 +7,7 @@ const SHELL = [
   'style.css',
   'app.js',
   'sticker.js',
+  'i18n.js',
   'manifest.json',
   'icons/icon-192.png',
   'icons/icon-512.png',
