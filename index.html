@@ -29,6 +29,11 @@
       <div class="cam-stage">
         <video id="video" playsinline muted autoplay></video>
         <div id="flash" class="flash"></div>
+        <div id="recBadge" class="rec-badge" hidden role="status">● 0:00</div>
+        <div id="modeSwitch" class="mode-switch" role="group" aria-label="Camera mode">
+          <button type="button" class="on" data-mode="photo">Photo</button>
+          <button type="button" data-mode="video">Video</button>
+        </div>
 
         <div id="camMsg" class="cam-msg" hidden>
           <div class="cam-msg-inner">
@@ -38,7 +43,7 @@
             <div class="btn-col">
               <button id="btnRetry" class="btn btn-primary">Try the camera again</button>
               <label class="btn">Choose photos from my gallery
-                <input id="fileInput" type="file" accept="image/*" multiple hidden>
+                <input id="fileInput" type="file" accept="image/*,video/*" multiple hidden>
               </label>
               <button id="btnDemo" class="btn">Use sample pet photos</button>
             </div>

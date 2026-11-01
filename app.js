@@ -301,6 +301,7 @@ function buildMoments() {
   }
   const moments = groups.map((items) => makeMoment(items, false));
   for (const s of state.photos.filter((p) => p.kind === 'sticker')) moments.push(makeMoment([s], true));
+  for (const v of state.photos.filter((p) => p.kind === 'video')) { const mm = makeMoment([v], false); mm.video = true; moments.push(mm); }
   moments.sort((a, b) => a.ts - b.ts);
 
   // automatic milestones by photo count
@@ -429,6 +430,104 @@ async function toggleTagOn(items, tagId) {
   }
   markChanged();
 }
+/* ---------- 5b. video: record, import and play short clips ---------- */
+const VIDEO_MAX_SEC = 60;                                   // keeps clips small enough for the phone's browser storage
+const fmtDur = (s) => { s = Math.max(0, Math.round(s || 0)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
+const fileExt = (rec) => (rec.kind === 'sticker' ? 'png' : rec.kind === 'video' ? (/mp4|quicktime/.test(rec.mime || (rec.blob && rec.blob.type) || '') ? 'mp4' : 'webm') : 'jpg');
+let camMode = 'photo', recorder = null, recChunks = [], recStart = 0, recTimer = 0, recMic = null;
+
+/* Read length and a poster frame from a video file. MediaRecorder files often report no length, so seek to the end to find it. */
+async function videoInfo(blob, knownDur) {
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  const url = URL.createObjectURL(blob);
+  const once = (ev, ms) => new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('This video could not be read here.')), ms); v.addEventListener(ev, () => { clearTimeout(t); res(); }, { once: true }); v.addEventListener('error', () => { clearTimeout(t); rej(new Error('This video format cannot be read by this browser.')); }, { once: true }); });
+  try {
+    v.src = url;
+    await once('loadeddata', 10000);
+    let dur = v.duration;
+    if (!isFinite(dur) || !dur) { v.currentTime = 1e7; await once('seeked', 4000).catch(() => {}); dur = isFinite(v.duration) && v.duration ? v.duration : (knownDur || 0); }
+    const seek = new Promise((res) => v.addEventListener('seeked', res, { once: true }));
+    v.currentTime = Math.min(0.2, (dur || 1) / 2);
+    await Promise.race([seek, sleep(3000)]);
+    const k = Math.min(1, 320 / Math.max(v.videoWidth || 320, v.videoHeight || 320));
+    const c = document.createElement('canvas'); c.width = Math.max(1, Math.round((v.videoWidth || 320) * k)); c.height = Math.max(1, Math.round((v.videoHeight || 240) * k));
+    c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+    return { dur: dur || knownDur || 0, poster: c };
+  } finally { URL.revokeObjectURL(url); v.removeAttribute('src'); v.load(); }
+}
+async function ingestVideo(blob, opts = {}) {
+  const info = await videoInfo(blob, opts.dur);
+  const rec = {
+    id: uid(), ts: opts.ts || Date.now(), kind: 'video', blob, mime: blob.type || 'video/webm', dur: info.dur,
+    thumb: await toBlob(info.poster, 'image/jpeg', 0.8), hash: '0000000000000000', sharp: 0,
+    tags: opts.tags ? [...opts.tags] : [], pinCover: false, demo: !!opts.demo
+  };
+  await dbPut(rec); state.photos.push(rec); markChanged();
+  return rec;
+}
+
+function pickVideoMime() {
+  const list = ['video/mp4;codecs=avc1', 'video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return list.find((t) => { try { return MediaRecorder.isTypeSupported(t); } catch (e) { return false; } }) || '';
+}
+function recUI(on) {
+  $('#btnShutter').classList.toggle('rec', on);
+  $('#recBadge').hidden = !on;
+  $('#modeSwitch').hidden = on;
+  $$('#btnFlip, #modeSwitch button, #btnThumb').forEach((b) => { b.disabled = on; });
+}
+async function startRecording() {
+  if (shooting) return;
+  if (!camReady) { toast('Camera is not ready. Use the options on screen.', 'err'); return; }
+  if (typeof MediaRecorder === 'undefined') { toast('This browser cannot record video. Choose a video from your gallery instead.', 'err', 4000); $('#fileInput').click(); return; }
+  const tracks = [...stream.getVideoTracks()];
+  try { recMic = await navigator.mediaDevices.getUserMedia({ audio: true }); tracks.push(...recMic.getAudioTracks()); }
+  catch (e) { recMic = null; toast('No microphone access, so this clip has no sound.', '', 2600); }
+  const mime = pickVideoMime();
+  try { recorder = new MediaRecorder(new MediaStream(tracks), mime ? { mimeType: mime } : undefined); }
+  catch (e) { if (recMic) recMic.getTracks().forEach((t) => t.stop()); recMic = null; recorder = null; toast('Could not start recording: ' + (e.message || e), 'err', 3500); return; }
+  recChunks = [];
+  recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+  recorder.onstop = finishRecording;
+  recorder.start(1000);
+  recStart = Date.now(); recUI(true);
+  if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});   // ask the browser not to evict big clips
+  const tick = () => { const s = (Date.now() - recStart) / 1000; $('#recBadge').textContent = `● ${fmtDur(s)} / ${fmtDur(VIDEO_MAX_SEC)}`; if (s >= VIDEO_MAX_SEC) stopRecording(); };
+  tick(); recTimer = setInterval(tick, 250);
+}
+function stopRecording() { if (recorder && recorder.state !== 'inactive') recorder.stop(); }
+async function finishRecording() {
+  clearInterval(recTimer);
+  const rc = recorder, secs = (Date.now() - recStart) / 1000;
+  recorder = null; recUI(false);
+  if (recMic) { recMic.getTracks().forEach((t) => t.stop()); recMic = null; }
+  const blob = new Blob(recChunks, { type: (rc && rc.mimeType) || 'video/webm' });
+  recChunks = [];
+  if (blob.size < 500) { toast('That clip was too short to save.', 'err', 2500); return; }
+  shooting = true;
+  try {
+    const rec = await ingestVideo(blob, { dur: secs });
+    lastBatch = [rec];
+    toast(`Video saved ✓ (${fmtDur(rec.dur)})`, '', 1800);
+    showQuickTags();
+  } catch (e) { toast('Could not save the video: ' + (e.message || e), 'err', 4000); }
+  finally { shooting = false; }
+}
+function setCamMode(m) {
+  if (recorder) return;
+  camMode = m;
+  $$('#modeSwitch button').forEach((b) => b.classList.toggle('on', b.dataset.mode === m));
+  $('#btnBurst').hidden = m === 'video';
+  $('#btnShutter').classList.toggle('video', m === 'video');
+  $('#btnShutter').setAttribute('aria-label', m === 'video' ? 'Start or stop recording' : 'Take photo');
+}
+/* the shutter button and the space bar call shoot(): in video mode they start and stop recording instead */
+{
+  const photoShoot = shoot, camOff = stopCamera;
+  shoot = () => (camMode === 'video' ? (recorder ? stopRecording() : startRecording()) : photoShoot());
+  stopCamera = () => { if (recorder) stopRecording(); camOff(); };
+}
 function updateChrome() {
   const photos = state.photos.filter((p) => p.kind === 'photo');
   $('#thumbCount').textContent = photos.length;
@@ -440,18 +539,18 @@ function updateChrome() {
   $('#petBadge').textContent = (state.profile && state.profile.name) ? state.profile.name : 'My pet';
 }
 async function importFiles(fileList) {
-  const files = [...fileList].filter((f) => f.type.startsWith('image/'));
-  if (!files.length) { toast('No images selected. Pick photo files (JPG, PNG, HEIC may not work).', 'err', 3500); return; }
+  const files = [...fileList].filter((f) => f.type.startsWith('image/') || f.type.startsWith('video/'));
+  if (!files.length) { toast('No images selected. Pick photo or video files (JPG, PNG, MP4, MOV, WebM).', 'err', 3500); return; }
   let ok = 0;
   for (const f of files) {
-    try { await ingestFile(f); ok++; toast(`Adding photos… ${ok}/${files.length}`, '', 1200); }
+    try { if (f.type.startsWith('video/')) await ingestVideo(f, { ts: f.lastModified || Date.now() }); else await ingestFile(f); ok++; toast(`Adding… ${ok}/${files.length}`, '', 1200); }
     catch (e) { /* skip unreadable file */ }
   }
   if (ok) {
-    toast(`Added ${plural(ok, 'photo')} ✓`);
+    toast(`Added ${plural(ok, 'file')} ✓`);
     setView('timeline');
   }
-  else toast('Those files could not be read as images.', 'err', 3500);
+  else toast('Those files could not be read as photos or videos.', 'err', 3500);
   if (ok < files.length && ok) toast(`Added ${ok}, skipped ${files.length - ok} unreadable file(s).`, '', 3500);
 }
 
@@ -496,11 +595,13 @@ function renderTimeline() {
   const stat = $('#statLine');
   if (!photos.length && !all.length) stat.innerHTML = '';
   else {
-    const photoMoments = all.filter((m) => !m.sticker).length;
+    const photoMoments = all.filter((m) => !m.sticker && !m.video).length;
     const newest = Math.max(...state.photos.map((p) => p.ts));
     const age = ageAt(newest);
     stat.innerHTML = `${name ? esc(name) + ' · ' : ''}${plural(photos.length, 'photo')} folded into ${plural(photoMoments, 'moment')}` +
       `<small>${age ? esc(age) + ' · ' : ''}Tap a stack to open it. Nothing is ever deleted automatically.</small>`;
+    const nVid = state.photos.filter((p) => p.kind === 'video').length;
+    if (nVid && stat.firstChild && stat.firstChild.nodeType === 3) stat.firstChild.textContent += ' · ' + plural(nVid, 'video');
   }
 
   renderReviewCard(all);
@@ -543,8 +644,8 @@ function renderTimeline() {
     html += `<div class="month-h"><span>${esc(fmtMonth(anyTs))}</span><small>${esc(age)}</small></div>`;
     for (const [dk, ms] of days) {
       const ts = ms[0].ts;
-      const nPhotos = ms.reduce((n, m) => n + (m.sticker ? 0 : m.items.length), 0);
-      const nMoments = ms.filter((m) => !m.sticker).length;
+      const nPhotos = ms.reduce((n, m) => n + (m.sticker || m.video ? 0 : m.items.length), 0);
+      const nMoments = ms.filter((m) => !m.sticker && !m.video).length;
       const dn = dayNumber(ts, firstTs);
       html += `<section class="day" data-day="${dk}"><div class="day-h"><span class="d">${esc(fmtDay(ts))}</span>
         <span class="pillbox" title="${dn.title}">${dn.label}</span>
@@ -560,13 +661,13 @@ function renderTimeline() {
 function momentCard(m) {
   const n = m.items.length;
   const tags = [...m.tags].filter((t) => t !== 'sticker').map(tagEmoji).join('');
-  const label = m.sticker ? 'Sticker' : `Moment of ${plural(n, 'photo')}`;
-  return `<button class="moment${n > 1 ? ' stack' : ''}${m.sticker ? ' sticker' : ''}" data-open="${m.cover.id}" aria-label="${label}">
+  const label = m.sticker ? 'Sticker' : m.video ? 'Video' : `Moment of ${plural(n, 'photo')}`;
+  return `<button class="moment${n > 1 ? ' stack' : ''}${m.sticker ? ' sticker' : ''}${m.video ? ' video' : ''}" data-open="${m.cover.id}" aria-label="${label}">
     <img src="${urlFor(m.cover, 'thumb')}" alt="" loading="lazy" decoding="async">
     ${n > 1 ? `<span class="badge count">×${n}</span>` : ''}
     ${m.milestone ? `<span class="badge mile">⭐ ${esc(m.milestone)}</span>` : (m.tags.has('milestone') ? '<span class="badge mile">⭐</span>' : '')}
     ${tags.replace('⭐', '') ? `<span class="badge tags">${tags.replace('⭐', '')}</span>` : ''}
-    ${m.sticker ? '<span class="badge stk">sticker</span>' : ''}</button>`;
+    ${m.sticker ? '<span class="badge stk">sticker</span>' : ''}${m.video ? `<span class="badge vid">▶ ${fmtDur(m.cover.dur)}</span>` : ''}</button>`;
 }
 function renderFilterChips(all) {
   if (!state.photos.length) { $('#filterChips').innerHTML = ''; return; }
@@ -616,10 +717,12 @@ function renderViewer() {
   if (!m) { closeSheet('sheet-viewer'); return; }
   const cur = m.items.find((i) => i.id === viewer.photoId) || m.cover;
   viewer.photoId = cur.id;
-  $('#vTitle').textContent = m.sticker ? 'Sticker' : (m.items.length > 1 ? `Moment · ${plural(m.items.length, 'photo')}` : 'Photo');
+  $('#vTitle').textContent = m.sticker ? 'Sticker' : m.video ? 'Video' : (m.items.length > 1 ? `Moment · ${plural(m.items.length, 'photo')}` : 'Photo');
   const stage = $('#vStage');
   stage.className = 'v-stage' + (cur.kind === 'sticker' ? ' sticker' : '');
-  stage.innerHTML = `<img src="${urlFor(cur, 'blob')}" alt="Pet photo taken ${esc(fmtDay(cur.ts))}">`;
+  stage.innerHTML = cur.kind === 'video'
+    ? `<video controls playsinline preload="metadata" poster="${urlFor(cur, 'thumb')}" src="${urlFor(cur, 'blob')}"></video>`
+    : `<img src="${urlFor(cur, 'blob')}" alt="Pet photo taken ${esc(fmtDay(cur.ts))}">`;
 
   $('#vStrip').innerHTML = m.items.length > 1 ? m.items.map((i) =>
     `<button data-pick="${i.id}" class="${i.id === cur.id ? 'on' : ''}" aria-label="Photo at ${fmtTime(i.ts)}"><img src="${urlFor(i, 'thumb')}" alt="">${i.id === m.cover.id ? '<span class="cv" title="Cover">⭐</span>' : ''}</button>`).join('') : '';
@@ -638,7 +741,7 @@ function renderViewer() {
   if (m.items.length > 1) acts.push(`<button class="btn btn-primary" data-act="choose">☑ Choose which of these ${m.items.length} to keep</button>`);
   if (m.items.length > 1 && cur.kind === 'photo') acts.push(`<button class="btn" data-act="split">✂ This one is different: take it out of the stack</button>`);
   if (m.items.length > 1) acts.push(`<button class="btn" data-act="tidy">🧹 Keep only the cover, delete ${m.items.length - 1} others</button>`);
-  acts.push(`<button class="btn btn-danger" data-act="delete">🗑 Delete this ${cur.kind === 'sticker' ? 'sticker' : 'photo'}</button>`);
+  acts.push(`<button class="btn btn-danger" data-act="delete">🗑 Delete this ${cur.kind}</button>`);
   $('#vActions').innerHTML = acts.join('');
 }
 async function removePhotos(ids) {
@@ -659,7 +762,7 @@ async function viewerAction(act) {
     markChanged(); renderViewer(); toast('Cover updated ✓'); return;
   }
   if (act === 'share') {
-    const res = await shareBlob(cur.blob, `pawtime-${dayKey(cur.ts)}.${cur.kind === 'sticker' ? 'png' : 'jpg'}`);
+    const res = await shareBlob(cur.blob, `pawtime-${dayKey(cur.ts)}.${fileExt(cur)}`);
     shareToast(res); return;
   }
   if (act === 'choose') { openPick(m.id, false); return; }
@@ -934,7 +1037,7 @@ function updateSettingsPreview() {
   $('#setSimOut').textContent = s.sim <= 4 ? 'very strict' : s.sim <= 12 ? 'balanced' : 'very loose';
   $('#setWinOut').textContent = `${s.windowMin} min`;
   const photos = state.photos.filter((p) => p.kind === 'photo').length;
-  const moments = getMoments().filter((m) => !m.sticker).length;
+  const moments = getMoments().filter((m) => !m.sticker && !m.video).length;
   $('#setPreview').textContent = photos ? `Right now: ${plural(photos, 'photo')} → ${plural(moments, 'moment')}.` : 'Take or add some photos to see the effect here.';
 }
 async function saveProfile() {
@@ -949,7 +1052,7 @@ async function exportBackup() {
   try {
     toast('Preparing backup…', '', 1500);
     const out = { app: 'PawTime', version: 1, exportedAt: new Date().toISOString(), profile: state.profile, settings: state.settings, photos: [] };
-    for (const p of state.photos) out.photos.push({ id: p.id, ts: p.ts, kind: p.kind, tags: p.tags, pinCover: p.pinCover, image: await blobToDataURL(p.blob) });
+    for (const p of state.photos) out.photos.push({ id: p.id, ts: p.ts, kind: p.kind, tags: p.tags, pinCover: p.pinCover, image: p.kind === 'video' ? null : await blobToDataURL(p.blob) });   // videos are too big for a .json backup
     downloadBlob(new Blob([JSON.stringify(out)], { type: 'application/json' }), `pawtime-backup-${dayKey(Date.now())}.json`);
     toast('Backup downloaded ✓');
   } catch (e) { toast('Backup failed: ' + (e.message || e), 'err', 3500); }
@@ -970,6 +1073,8 @@ function wire() {
     setView('timeline');
   });
   $('#btnShutter').addEventListener('click', shoot);
+  $('#modeSwitch').addEventListener('click', (e) => { const b = e.target.closest('[data-mode]'); if (b) setCamMode(b.dataset.mode); });
+  new MutationObserver(() => { if ($('#sheet-viewer').hidden) $('#vStage').innerHTML = ''; }).observe($('#sheet-viewer'), { attributes: true, attributeFilter: ['hidden'] });   // closing the viewer stops the sound
   $('#btnFlip').addEventListener('click', () => { facing = facing === 'environment' ? 'user' : 'environment'; startCamera(); });
   $('#btnBurst').addEventListener('click', (e) => {
     burst = !burst; e.currentTarget.setAttribute('aria-pressed', burst);
