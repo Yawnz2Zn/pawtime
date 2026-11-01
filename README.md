@@ -4,7 +4,7 @@
 
 A phone-installable web app (PWA) for pet owners whose camera roll is full of dozens of near-identical pet photos they can't bear to delete, and can never find again. It also makes pet stickers: automatic cut-out with outline, patterned cards, text, emoji and freehand drawing.
 
-- **Live app:** `https://<your-github-username>.github.io/<repo-name>/`  ← *(fill in after enabling GitHub Pages)*
+- **Live app:** `https://<Yawnz2Zn>.github.io/<repo-name>/`  ← *(fill in after enabling GitHub Pages)*
 - **Screen recording:** *(add a short phone recording here, e.g. `docs/demo.mp4`)*
 - Course: SD5911, Assignment 3 (An interactive experience). Individual project.
 
@@ -15,6 +15,9 @@ A phone-installable web app (PWA) for pet owners whose camera roll is full of do
 *Screenshots use the app's built-in sample pet photos (drawn in code), not real animals.*
 
 ---
+
+## Language (English / 中文)
+The app is written in English and has a Chinese version. Tap the **中文 / EN** button in the top bar (or on the first screen) to switch; the choice is remembered, and a phone set to Chinese starts in Chinese. `i18n.js` holds the translation list and swaps the text on screen without changing the app's logic. Your own words (pet name, text typed on stickers) are never translated. The Chinese wording was machine-translated and then checked on screen; fix or add lines in `DICT` / `RULES` in `i18n.js`.
 
 ## The idea
 
@@ -79,7 +82,7 @@ Browsers only allow the camera on https pages, so use the deployed GitHub Pages 
 **Deploy (GitHub Pages):** push to GitHub, then *Settings → Pages → Build and deployment → Deploy from a branch → `main` / `(root)`*. The link appears after about a minute.
 
 ### Optional: automated smoke test
-`tests/smoke_test.py` drives the app in headless Chromium with a fake camera (45 checks: shooting, burst, persistence, video recording and playback, folding, time-window setting, cover choice, filter, viewer, sticker layers, drawing, pet cut-out, save/share, journey, choose-what-to-keep, permission-denied path, bad files, service worker).
+`tests/smoke_test.py` drives the app in headless Chromium with a fake camera (48 checks: shooting, burst, persistence, video recording and playback, folding, time-window setting, cover choice, filter, viewer, sticker layers, drawing, pet cut-out, save/share, journey, choose-what-to-keep, permission-denied path, bad files, service worker).
 ```bash
 pip install playwright && python -m playwright install chromium
 python3 -m http.server 8765 &        # serve the project root
