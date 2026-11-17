@@ -800,6 +800,24 @@ function jyCard(key, ms, title, sub, small, mosaic) {
   const img = pics.length >= 4 ? `<div class="jy-mosaic">${pics.map((m) => `<img src="${urlFor(m.cover, 'thumb')}" alt="">`).join('')}</div>` : `<img class="jy-img" src="${urlFor(best.cover, 'thumb')}" alt="">`;
   return `<button class="jy-card" data-jy="${key}">${img}<div class="jy-info"><b>${esc(title)}</b><span>${esc(sub)}</span>${small ? `<small>${esc(small)}</small>` : ''}</div><span class="jy-go" aria-hidden="true">›</span></button>`;
 }
+/* Journey v2: a cover-photo hero, highlight stories, a growth curve, photo year cards, month tiles and a day calendar. */
+const jyUrl = (m, big) => urlFor(m.cover, big && !m.video ? 'blob' : 'thumb');
+function growthChart(photos, firstTs, lastTs) {
+  const keys = [], cnt = new Map(), mk = (d) => d.getFullYear() * 12 + d.getMonth();
+  for (let d = new Date(new Date(firstTs).getFullYear(), new Date(firstTs).getMonth(), 1); d <= new Date(lastTs); d = new Date(d.getFullYear(), d.getMonth() + 1, 1)) keys.push(mk(d));
+  if (keys.length < 3) return '';
+  photos.forEach((p) => { const k = mk(new Date(p.ts)); cnt.set(k, (cnt.get(k) || 0) + 1); });
+  const vals = keys.map((k) => cnt.get(k) || 0), top = Math.max(...vals), W = 300, H = 100, X = (i) => 8 + i / (keys.length - 1) * (W - 16), Y = (v) => H - 10 - Math.sqrt(v / top) * (H - 34);
+  let line = `M${X(0)},${Y(vals[0])}`;
+  for (let i = 1; i < vals.length; i++) { const cx = (X(i - 1) + X(i)) / 2; line += ` C${cx},${Y(vals[i - 1])} ${cx},${Y(vals[i])} ${X(i)},${Y(vals[i])}`; }
+  const pk = vals.indexOf(top), lab = (k) => `${MONTHS[k % 12]} ${Math.floor(k / 12)}`;
+  return `<div class="jy2-sec"><h3 class="jy-h">Growth rhythm</h3></div>
+    <div class="jy2-chart"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Photos per month">
+      <defs><linearGradient id="jyg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c9622e" stop-opacity=".45"/><stop offset="1" stop-color="#c9622e" stop-opacity="0"/></linearGradient></defs>
+      <path d="${line} L${X(vals.length - 1)},${H} L${X(0)},${H} Z" fill="url(#jyg)"/><path d="${line}" fill="none" stroke="#c9622e" stroke-width="2.4" stroke-linecap="round" vector-effect="non-scaling-stroke"/>
+    </svg><i class="jy2-peak" style="left:${X(pk) / W * 100}%;top:${Y(top) / H * 100}%"></i>
+    <div class="jy2-axis"><span>${esc(lab(keys[0]))}</span><span>${esc(lab(keys[keys.length - 1]))}</span></div></div>`;
+}
 function renderJourney() {
   const host = $('#jyBody'), crumbs = $('#jyCrumbs');
   const all = getMoments(), ms = all.filter((m) => !m.sticker);
@@ -816,39 +834,53 @@ function renderJourney() {
   const trail = [`<button data-jy="root">All time</button>`];
   if (journey.year !== null) trail.push(`<button data-jy="year:${journey.year}">${journey.year}</button>`);
   if (journey.month !== null) trail.push(`<span>${MONTHS[journey.month]}</span>`);
-  crumbs.innerHTML = trail.join('<i>›</i>');
+  crumbs.innerHTML = journey.year === null ? '' : trail.join('<i>›</i>');
+  crumbs.hidden = journey.year === null;
 
   const photos = state.photos.filter((p) => p.kind === 'photo');
   const firstTs = photos.length ? Math.min(...photos.map((p) => p.ts)) : ms[0].ts, lastTs = Math.max(...ms.map((m) => m.ts));
   const name = state.profile && state.profile.name;
+  const stat = (n, l) => `<div><b data-count="${n}">${n}</b><span>${l}</span></div>`;
   let html = '';
-  if (journey.year === null) {                             // level 1: all years
-    const days = new Set(ms.map((m) => dayKey(m.ts))).size, stickers = all.length - ms.length, age = ageAt(lastTs);
-    html += `<div class="jy-hero"><div class="jy-title">${name ? esc(name) + '’s journey' : 'Your pet’s journey'}</div>
-      <div class="jy-sub">${esc(age ? age + ' at the latest photo' : 'Since ' + fmtDay(firstTs))}</div>
-      <div class="jy-stats"><div><b>${photos.length}</b><span>photos</span></div><div><b>${ms.length}</b><span>moments</span></div><div><b>${days}</b><span>days</span></div><div><b>${stickers}</b><span>stickers</span></div></div></div>`;
+  if (journey.year === null) {                             // level 1: everything
+    const days = new Set(ms.map((m) => dayKey(m.ts))).size, stickers = all.length - ms.length, age = ageAt(lastTs), dn = dayNumber(lastTs, firstTs);
+    html += `<div class="jy2-hero"><img class="jy2-hero-img" src="${jyUrl(bestOf(ms), true)}" alt=""><div class="jy2-hero-in">
+      <div class="jy2-eyebrow">Journey</div><div class="jy2-name">${name ? esc(name) : 'Your pet'}</div>
+      <div class="jy2-meta">${esc(age ? age.replace(' old', '') + ' · ' : '')}${esc(dn.label)}</div>
+      <div class="jy2-stats">${stat(photos.length, 'photos')}${stat(ms.length, 'moments')}${stat(days, 'days')}${stat(stickers, 'stickers')}</div></div></div>`;
     const miles = ms.filter((m) => m.milestone || m.tags.has('milestone') || isBirthday(m.ts)).slice(0, 14);
-    if (miles.length) html += `<h3 class="jy-h">⭐ Milestones</h3><div class="jy-miles">${miles.map((m) => `<button data-open="${m.cover.id}"><img src="${urlFor(m.cover, 'thumb')}" alt=""><span>${esc(m.milestone || (isBirthday(m.ts) ? 'Birthday' : 'Milestone'))}</span><small>${esc(fmtDay(m.ts))}</small></button>`).join('')}</div>`;
-    html += '<h3 class="jy-h">Years</h3>';
+    if (miles.length) html += `<div class="jy2-sec"><h3 class="jy-h">Highlights</h3></div><div class="jy2-rail">${miles.map((m) => `<button class="jy2-story" data-open="${m.cover.id}"><img src="${jyUrl(m)}" alt=""><span class="jy2-shade"></span><span class="jy2-story-t"><b>${esc(m.milestone || (isBirthday(m.ts) ? 'Birthday' : 'Milestone'))}</b><small>${esc(fmtDay(m.ts))}</small></span></button>`).join('')}</div>`;
+    html += growthChart(photos, firstTs, lastTs);
+    html += '<div class="jy2-sec"><h3 class="jy-h">Years</h3></div>';
     for (const [y, yms] of [...byYear].sort((a, b) => b[0] - a[0])) {
       const a0 = ageAt(Math.min(...yms.map((m) => m.ts))), a1 = ageAt(Math.max(...yms.map((m) => m.ts)));
-      html += jyCard('year:' + y, yms, String(y), `${plural(photoCount(yms), 'photo')} · ${plural(yms.length, 'moment')}`, a0 && a1 ? (a0 === a1 ? a0 : `${a0.replace(' old', '')} → ${a1}`) : '', true);
+      const ar = a0 && a1 ? (a0 === a1 ? a0 : `${a0.replace(' old', '')} → ${a1}`) : '';
+      html += `<button class="jy-card jy2c jy2-year" data-jy="year:${y}"><img src="${jyUrl(bestOf(yms), true)}" alt=""><span class="jy2-shade"></span><span class="jy2-year-t"><span class="jy2-yr">${y}</span><span class="jy2-ysub">${esc(plural(photoCount(yms), 'photo'))} · ${esc(plural(yms.length, 'moment'))}</span>${ar ? `<span class="jy2-chip">${esc(ar)}</span>` : ''}</span><span class="jy2-arrow" aria-hidden="true">›</span></button>`;
     }
   } else if (journey.month === null) {                     // level 2: the months of one year
     const yms = byYear.get(journey.year), per = new Array(12).fill(0);
     yms.forEach((m) => { per[new Date(m.ts).getMonth()] += m.items.length; });
     const top = Math.max(...per);
-    html += `<div class="jy-hero small"><div class="jy-title">${journey.year}</div><div class="jy-sub">${plural(photoCount(yms), 'photo')} in ${plural(yms.length, 'moment')}</div>
-      <div class="jy-bars" role="group" aria-label="Photos per month">${per.map((n, i) => `<button data-jy="month:${i}" ${n ? '' : 'disabled'} aria-label="${MONTHS[i]}: ${n} photos"><i style="height:${n ? Math.max(8, Math.round(n / top * 100)) : 3}%"></i><span>${MONTHS[i][0]}</span></button>`).join('')}</div></div><h3 class="jy-h">Months</h3>`;
+    html += `<div class="jy2-top"><div class="jy2-bigyear">${journey.year}</div><div class="jy-sub">${esc(plural(photoCount(yms), 'photo'))} in ${esc(plural(yms.length, 'moment'))}</div>
+      <div class="jy-bars" role="group" aria-label="Photos per month">${per.map((n, i) => `<button data-jy="month:${i}" ${n ? '' : 'disabled'} aria-label="${MONTHS[i]}: ${n} photos"><i style="height:${n ? Math.max(8, Math.round(n / top * 100)) : 3}%"></i><span>${MONTHS[i][0]}</span></button>`).join('')}</div></div>
+      <div class="jy2-sec"><h3 class="jy-h">Months</h3></div><div class="jy2-tiles">`;
     for (let i = 11; i >= 0; i--) {
       const mm = yms.filter((m) => new Date(m.ts).getMonth() === i); if (!mm.length) continue;
-      html += jyCard('month:' + i, mm, MONTHS[i], `${plural(photoCount(mm), 'photo')} · ${plural(mm.length, 'moment')}`, ageAt(new Date(journey.year, i + 1, 0, 12).getTime()));
+      html += `<button class="jy-card jy2c jy2-tile" data-jy="month:${i}"><img src="${jyUrl(bestOf(mm))}" alt=""><span class="jy2-shade"></span><span class="jy2-tile-t"><b>${MONTHS[i]}</b><small>${esc(plural(photoCount(mm), 'photo'))} · ${esc(plural(mm.length, 'moment'))}</small></span></button>`;
     }
+    html += '</div>';
   } else {                                                 // level 3: the days of one month
-    const mms = (byYear.get(journey.year) || []).filter((m) => new Date(m.ts).getMonth() === journey.month);
-    html += `<div class="jy-hero small"><div class="jy-title">${MONTHS[journey.month]} ${journey.year}</div><div class="jy-sub">${plural(photoCount(mms), 'photo')} in ${plural(mms.length, 'moment')}</div></div><h3 class="jy-h">Days (tap one to open it on the timeline)</h3>`;
+    const y = journey.year, mo = journey.month, mms = (byYear.get(y) || []).filter((m) => new Date(m.ts).getMonth() === mo);
     const byDay = new Map();
     mms.forEach((m) => { const k = dayKey(m.ts); if (!byDay.has(k)) byDay.set(k, []); byDay.get(k).push(m); });
+    const dim = new Date(y, mo + 1, 0).getDate(), lead = new Date(y, mo, 1).getDay();
+    let cal = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d) => `<span class="jy2-wd">${d}</span>`).join('') + '<i></i>'.repeat(lead);
+    for (let d = 1; d <= dim; d++) {
+      const k = `${y}-${pad(mo + 1)}-${pad(d)}`, dms = byDay.get(k);
+      cal += dms ? `<button class="jy2-cell has" data-jy="day:${k}" aria-label="${esc(fmtDay(dms[0].ts))}"><img src="${jyUrl(bestOf(dms))}" alt=""><b>${d}</b></button>` : `<span class="jy2-cell"><b>${d}</b></span>`;
+    }
+    html += `<div class="jy2-top"><div class="jy2-bigyear">${MONTHS[mo]}</div><div class="jy-sub">${y} · ${esc(plural(photoCount(mms), 'photo'))} in ${esc(plural(mms.length, 'moment'))}</div></div>
+      <div class="jy2-cal">${cal}</div><div class="jy2-sec"><h3 class="jy-h">Days</h3></div>`;
     for (const [dk, dms] of [...byDay].sort((a, b) => (a[0] < b[0] ? 1 : -1))) {
       const dn = dayNumber(dms[0].ts, firstTs);
       html += jyCard('day:' + dk, dms, fmtDay(dms[0].ts), `${plural(photoCount(dms), 'photo')} → ${plural(dms.length, 'moment')}`, dn.label + (isBirthday(dms[0].ts) ? ' · 🎂 Birthday!' : ''));
@@ -856,6 +888,12 @@ function renderJourney() {
   }
   host.innerHTML = html;
   $('#jyScroll').scrollTop = 0;
+  host.querySelectorAll('[data-count]').forEach((el) => {  // numbers count up once
+    const to = +el.dataset.count; if (!to || matchMedia('(prefers-reduced-motion:reduce)').matches) return;
+    const t0 = performance.now();
+    const tick = (t) => { const f = Math.min(1, (t - t0) / 700); el.textContent = Math.round(to * (1 - Math.pow(1 - f, 3))); if (f < 1) requestAnimationFrame(tick); };
+    el.textContent = '0'; requestAnimationFrame(tick);
+  });
 }
 function journeyGo(key) {
   if (key === 'root') { journey.year = null; journey.month = null; }

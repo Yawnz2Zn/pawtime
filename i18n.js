@@ -80,6 +80,8 @@
     'Your journey starts with the first photo.': '你的旅程从第一张照片开始。', 'Years, months and days will build up here.': '年、月、日会在这里一点点积累起来。',
     'Days (tap one to open it on the timeline)': '日期（点一天，在时间线上打开）', 'Photos per month': '每月照片数',
     'photos': '张照片', 'moments': '个瞬间', 'days': '天', 'stickers': '张贴纸', 'Your pet’s journey': '宠物的旅程',
+    'Highlights': '高光时刻', 'Days': '每一天', 'Growth rhythm': '成长节奏', 'Your pet': '你的宠物',
+    'Sun': '周日', 'Mon': '周一', 'Tue': '周二', 'Wed': '周三', 'Thu': '周四', 'Fri': '周五', 'Sat': '周六',
     'January': '1月', 'February': '2月', 'March': '3月', 'April': '4月', 'June': '6月', 'July': '7月', 'August': '8月', 'September': '9月', 'October': '10月', 'November': '11月', 'December': '12月', 'May': '5月',
     // settings
     'Pet profile': '宠物资料', 'Name': '名字', 'Smart folding': '智能折叠',

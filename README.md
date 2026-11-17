@@ -77,6 +77,9 @@ A few wrong merges are acceptable because nothing is deleted, the stack is visib
 ### 2. Cutting the pet out (this one is an AI model)
 The button runs **U²-Net-P** in the browser, with no cloud service or AI library. `vendor/` holds the model weights (4.5 MB) converted by my scripts in `vendor/tools/`, a small runner I wrote (`u2net-engine.js`), and the convolution kernel compiled to WebAssembly SIMD (`conv.c` → `conv.wasm`); I checked its output against ONNX Runtime (difference about 0.0001). The model loads on first use and is then cached. Without WebAssembly SIMD the app falls back to a **quick colour-based cut-out** and says so. *Fix the edges* lets you paint parts back or erase them. The outline is made by stamping the silhouette around a circle (solid, double, neon).
 
+## Look and feel
+The app is styled as a paper scrapbook: photos are taped polaroids on dotted notebook paper, cards and buttons have hand-drawn borders with ink outlines, and headings sit on a brush stroke. Every illustration (the paw-print paper, the sleeping dog on an empty timeline, the paw trail on an empty Journey, the welcome dog and cat, and the camera, calendar and compass icons) is an SVG I drew and inlined in `style.css` or `index.html`, so the app still loads nothing from the network. Headings ask for a handwriting face from the device (`Bradley Hand`, `Noteworthy`, `Xingkai SC`, `Kaiti SC`…) and fall back to a serif where none is installed, so the lettering looks hand-written on iPhone and Mac and plainer on some Android builds.
+
 ## Project structure
 ```
 index.html  style.css  app.js     app shell, styles, main logic (numbered sections)

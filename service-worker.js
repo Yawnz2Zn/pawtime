@@ -1,6 +1,6 @@
 /* PawTime service worker: caches the app shell so the app opens offline.
    Photos live in IndexedDB, not here. Bump CACHE when shell files change. */
-const CACHE = 'pawtime-shell-v1';
+const CACHE = 'pawtime-shell-v3';
 const SHELL = [
   './',
   'index.html',
